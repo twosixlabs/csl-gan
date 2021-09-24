@@ -121,7 +121,7 @@ def parse():
     parser.add_argument("--delta", type=float, default=None)
     parser.add_argument("--sigma", type=float, default=None)
     parser.add_argument("-is", "--use_imm_sens", action="store_true", default=False)
-    parser.add_argument("-psis", "--use_per_sample_imm_sens", action="store_true", default=False)
+    parser.add_argument("-ppis", "--use_per_param_imm_sens", action="store_true", default=False)
     parser.add_argument("-plc", "--use_per_layer_clipping", action="store_true", default=False)
     parser.add_argument("-sgc", "--use_split_grad_clip", action="store_true", default=False)
     parser.add_argument("-gc", "--use_grad_clip", action="store_true", default=False)
