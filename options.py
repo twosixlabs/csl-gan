@@ -10,10 +10,11 @@ import util
 
 MNIST_DEFAULTS = {
     "data_path": "/persist/datasets/mnist/",
+    "model": "Vanilla",
     "im_size": 28,
     "n_epochs": 10000,
-    "g_lr": 0.00002,
-    "d_lr": 0.00002,
+    "g_lr": 0.0002,
+    "d_lr": 0.0002,
     "batch_size": 600,
     "batch_split_size": 60,
     "train_set_size": 60000,
@@ -22,7 +23,6 @@ MNIST_DEFAULTS = {
     "unconditional": False,
     "adam_b1": 0.9,
     "adam_b2": 0.999,
-    "penalty_use_mean_samples": False,
     "penalty": [],
     "iter_on_mean_samples": 0,
     "delta": 1e-5,
@@ -40,6 +40,7 @@ MNIST_DEFAULTS = {
 
 CELEBA_DEFAULTS = {
     "data_path": "/persist/datasets/celeba/img_align_celeba/all/",
+    "model": "DeepConvResNet",
     "im_size": 64,
     "n_epochs": 1000,
     "g_lr": 0.0001,
@@ -53,16 +54,15 @@ CELEBA_DEFAULTS = {
     "adam_b1": 0.0,
     "adam_b2": 0.9,
     "penalty": ["WGAN-GP"],
-    "penalty_use_mean_samples": False,
     "iter_on_mean_samples": 0,
-    "mean_sample_size": 200,
-    "num_mean_samples": 80,
-    "mean_sample_noise_std": 0.1,
+    "mean_sample_size": 300,
+    "num_mean_samples": 32,
+    "mean_sample_noise_std": 0.12,
     "delta": 1e-6,
     "sigma": 0.2,
     "C": 30.0,
-    "C_weight": 1000.0,
-    "C_bias": 100.0,
+    "C_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500],
+    "adaptive_clipping_scalar": [20, 15, 20, 10, 20, 10, 15, 5, 10],
     "save_every": 10,
     "log_every": 20000,
     "sample_every": 60000,
@@ -85,6 +85,7 @@ def parse():
 
     parser.add_argument("dataset", type=str, choices=["MNIST", "CelebA"])
     parser.add_argument("-d", "--data_path", type=str, default=None)
+    parser.add_argument("--model", type=str, choices=["Vanilla", "DeepConvResNet"], default=None)
     parser.add_argument("--im_size", type=int, default=None, choices=[64, 48])
     parser.add_argument("--download_mnist", default=False, action="store_true")
     parser.add_argument("-o", "--output_dir", type=str, default=None) # will generate if None
@@ -120,15 +121,18 @@ def parse():
 
     parser.add_argument("--delta", type=float, default=None)
     parser.add_argument("--sigma", type=float, default=None)
-    parser.add_argument("-is", "--use_imm_sens", action="store_true", default=False)
-    parser.add_argument("-ppis", "--use_per_param_imm_sens", action="store_true", default=False)
-    parser.add_argument("-plc", "--use_per_layer_clipping", action="store_true", default=False)
-    parser.add_argument("-sgc", "--use_split_grad_clip", action="store_true", default=False)
-    parser.add_argument("-gc", "--use_grad_clip", action="store_true", default=False)
-    parser.add_argument("--C", type=float, default=None)
-    parser.add_argument("--C_weight", type=float, default=None)
-    parser.add_argument("--C_bias", type=float, default=None)
     parser.add_argument("-eb", "--epsilon_budget", type=float, default=None)
+
+    parser.add_argument("-is", "--use_imm_sens", action="store_true", default=False)
+    parser.add_argument("-ispp", "--imm_sens_per_param", action="store_true", default=False)
+
+    parser.add_argument("-gc", "--use_grad_clip", action="store_true", default=False)
+    parser.add_argument("-gcs", "--grad_clip_split", action="store_true", default=False)
+    parser.add_argument("--C", type=float, default=None)
+    parser.add_argument("-gccpl", "--grad_clip_constant_per_layer", action="store_true", default=False)
+    parser.add_argument("-gca", "--grad_clip_adaptive", action="store_true", default=False)
+    parser.add_argument("-acs", "--adaptive_clipping_scalar", type=float, nargs="*", default=None)
+    parser.add_argument("--C_per_layer", type=float, nargs="*", default=None)
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
     parser.add_argument("--log_every", type=int, default=None) # samples, prints and logs to csv
@@ -158,11 +162,15 @@ def parse():
         opt.log_every = max((opt.log_every // opt.batch_size)*opt.batch_size, 1)
         opt.sample_every = max((opt.sample_every // opt.batch_size)*opt.batch_size, 1)
 
-        opt.use_dp_per_sample = opt.use_grad_clip or opt.use_split_grad_clip or opt.use_per_sample_imm_sens
-        opt.use_dp = opt.use_dp_per_sample or opt.use_imm_sens
+        opt.use_dp = opt.use_grad_clip or opt.use_imm_sens
+        opt.use_mean_samples = opt.iter_on_mean_samples > 0 or opt.penalty_use_mean_samples or (opt.grad_clip_adaptive and opt.use_grad_clip)
+        opt.grad_clip_per_layer = opt.grad_clip_constant_per_layer or opt.grad_clip_adaptive
+
+        if opt.grad_clip_adaptive and not opt.grad_clip_per_layer:
+            raise Exception("Adaptive clipping only applies for per-layer clipping.")
 
         # Generate output directory if not specified
-        if opt.output_dir == None or output_dir == "":
+        if opt.output_dir == None or opt.output_dir == "":
             now = datetime.now()
             opt.output_dir = now.strftime("output/%m-%d-%H:%M-") + opt.dataset + "-g" + str(opt.g_device)[-1] + "-d" + str(opt.d_device)[-1] + "/"
         for path in ["output", opt.output_dir, opt.output_dir+"samples/", opt.output_dir+"saves/", opt.output_dir+"code/"]:

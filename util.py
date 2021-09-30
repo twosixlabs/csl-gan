@@ -41,15 +41,25 @@ def init_data(opt):
     return dataset, dataloader
 
 def init_models(opt, init_G=True, init_D=True):
+    n_classes = 0 if opt.unconditional else opt.n_classes
+    bn = not opt.use_grad_clip
+    G, D = None, None
+
     if opt.dataset == "MNIST":
-        G = MNISTVanillaG(opt.g_latent_dim, unconditional=opt.unconditional).to(opt.g_device) if init_G else None
-        D = MNISTVanillaD(unconditional=opt.unconditional).to(opt.d_device) if init_D else None
+        if opt.model == "DeepConvResNet":
+            G = MNIST_DCRN_G(opt.g_latent_dim, bn=bn, n_classes=n_classes).to(opt.g_device) if init_G else None
+            D = MNIST_DCRN_D(n_classes=n_classes).to(opt.d_device) if init_D else None
+        elif opt.model == "Vanilla":
+            G = MNISTVanillaG(opt.g_latent_dim, n_classes=n_classes).to(opt.g_device) if init_G else None
+            D = MNISTVanillaD(n_classes=n_classes).to(opt.d_device) if init_D else None
     elif opt.dataset == "CelebA":
-        dataset = CelebADataset(opt.data_path, im_size=opt.im_size)
-        GObj = ResNetDCGenerator48 if opt.im_size == 48 else ResNetDCGenerator64
-        DObj = ResNetDCDiscriminator48 if opt.im_size == 48 else ResNetDCDiscriminator64
-        G = GObj(z_dim=opt.g_latent_dim, bn=not (opt.use_grad_clip or opt.use_split_grad_clip)).to(opt.g_device) if init_G else None
-        D = DObj(gp_lambda=opt.gp_lambda).to(opt.d_device) if init_D else None
+        if opt.model == "DeepConvResNet":
+            GObj = CelebA_DCRN_G48 if opt.im_size == 48 else CelebA_DCRN_G64
+            DObj = CelebA_DCRN_D48 if opt.im_size == 48 else CelebA_DCRN_D64
+            G = GObj(z_dim=opt.g_latent_dim, bn=bn, n_classes=n_classes).to(opt.g_device) if init_G else None
+            D = DObj(n_classes=n_classes).to(opt.d_device) if init_D else None
+        elif opt.model == "Vanilla":
+            raise Exception("No vanilla architecture for CelebA.")
 
     return G, D
 

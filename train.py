@@ -7,6 +7,8 @@ import torch.optim as optim
 from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision
 from torch import autograd
+
+import opacus
 from opacus import PrivacyEngine
 from opacus import ISPrivacyEngine
 
@@ -40,7 +42,8 @@ for file in glob.glob("*.py"):
 G, D = util.init_models(opt)
 dataset, dataloader = util.init_data(opt)
 
-if opt.penalty_use_mean_samples or opt.iter_on_mean_samples > 0:
+if opt.use_mean_samples:
+    print("Generating mean samples...")
     batch_size_backup = opt.batch_size
     opt.batch_size = opt.mean_sample_size
     _, mean_dataloader = util.init_data(opt)
@@ -69,19 +72,20 @@ if opt.resume_epochs > 0:
 
 privacy_engine = None
 def setup_privacy_engine():
-    max_grad_norm = [opt.C_bias if "bias" in name else opt.C_weight for name,_ in D.named_parameters()] if opt.use_per_layer_clipping else opt.C
-    pe_obj = ISPrivacyEngine if opt.use_imm_sens else PrivacyEngine
-    privacy_engine = pe_obj(
-        D,
-        sample_rate=opt.batch_size/opt.train_set_size,
-        alphas=[1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64)), # Recommended by Opacus
-        noise_multiplier=opt.sigma,
-        max_grad_norm=max_grad_norm,
-        use_imm_sens=opt.use_imm_sens or opt.use_per_sample_imm_sens,
-        accum_passes=not opt.use_split_grad_clip,
-        per_sample=not opt.use_imm_sens,
-        auto_clip_and_accum_on_step=False
-    )
+    privacy_params = {
+        "sample_rate": opt.batch_size/opt.train_set_size,
+        "alphas": [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64)), # Recommended by Opacus
+        "noise_multiplier": opt.sigma,
+    }
+    if opt.use_imm_sens:
+        privacy_engine = ISPrivacyEngine(D, **privacy_params, per_param=opt.imm_sens_per_param)
+    elif opt.use_grad_clip:
+        privacy_engine = PrivacyEngine(
+            D, **privacy_params, accum_passes=not opt.grad_clip_split, auto_clip_and_accum_on_step=False,
+            max_grad_norm=opt.C_per_layer if opt.grad_clip_per_layer else opt.C
+        )
+        privacy_engine.disable_hooks()
+
     privacy_engine.attach(d_optimizer)
 
     return privacy_engine
@@ -102,31 +106,34 @@ def print_grad_info(model):
             print("None grad" if p.grad is None else p.grad.shape)
         print(p.__dict__.keys())
 
-def gen_z(size):
-    return torch.empty((size, opt.g_latent_dim), device=opt.g_device).normal_(0.0, 1.0), F.one_hot(torch.empty((size)).random_(0, opt.n_classes).long(), num_classes=opt.n_classes)
+def gen_z_y(size):
+    z = torch.empty((size, opt.g_latent_dim), device=opt.g_device).normal_(0.0, 1.0)
+    y = None if opt.unconditional else F.one_hot(torch.empty((size)).random_(0, opt.n_classes).long(), num_classes=opt.n_classes)
+    return z, y
 
-fixed_z, _ = gen_z(opt.sample_num)
-fixed_y = F.one_hot(torch.cat([torch.arange(opt.n_classes) for _ in range(opt.sample_num//opt.n_classes)]), num_classes=opt.n_classes).to(opt.g_device)
+fixed_z, fixed_y = gen_z_y(opt.sample_num)
+if not opt.unconditional:
+    fixed_y = F.one_hot(torch.cat([torch.arange(opt.n_classes) for _ in range(opt.sample_num//opt.n_classes)]), num_classes=opt.n_classes).to(opt.g_device)
 
-def eval_G_D(z, y):
+def eval_G_D(z, y=None):
     if opt.g_device == opt.d_device or opt.batch_split_size < opt.batch_size * 2:
-        img = G(z, y.to(opt.g_device)).to(opt.d_device)
-        return D(img.to(opt.d_device), y.to(opt.d_device)), img
+        img = G(z, None if y is None else y.to(opt.g_device)).to(opt.d_device)
+        return D(img.to(opt.d_device), None if y is None else y.to(opt.g_device)), img
     else:
         # Split batch to run G and D concurrently
         z_split = torch.split(z, opt.batch_split_size)
-        y_split = torch.split(y, opt.batch_split_size)
+        y_split = None if y is None else torch.split(y, opt.batch_split_size)
 
-        G_last = G(z_split[0], y_split[0].to(opt.d_device)).to(opt.d_device)
+        G_last = G(z_split[0], None if y is None else y_split[0].to(opt.d_device)).to(opt.d_device)
         ret_img = []
         ret_out = []
         for i in range(1, len(z_split)):
             ret_img.append(G_last)
-            ret_out.append(D(G_last, y_split[i].to(opt.d_device)))
-            G_last = G(z_split[i], y_split[i].to(opt.g_device)).to(opt.d_device)
+            ret_out.append(D(G_last, None if y is None else y_split[i].to(opt.d_device)))
+            G_last = G(z_split[i], None if y is None else y_split[i].to(opt.g_device)).to(opt.d_device)
 
         ret_img.append(G_last)
-        ret_out.append(D(G_last, y_split[-1].to(opt.d_device)))
+        ret_out.append(D(G_last, None if y is None else y_split[-1].to(opt.d_device)))
 
         return torch.cat(ret_out), torch.cat(ret_img)
 
@@ -136,8 +143,8 @@ def eval_G_D(z, y):
 # # # # # # # # # # #
 
 logger = Logger(
-    "G Loss: {:4.4f} | D Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%, Penalty: {:4.4f})\nGrad Norm - Overall: {:4.4f} - Per Layer: {}",
-    ["G Loss", "D Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc", "D Penalty", "D Grad Norm", "D Layer Grad Norms"],
+    "G Loss: {:4.4f} | D Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%, Penalty: {:4.4f})" + ("\n=== Grad Norms ===\nMean Per Layer: {}\nStd Per Layer: {}\nMax Per Layer: {}\nClipping Params: {}\nGrads Clipped: {}" if opt.use_grad_clip else ""),
+    ["G Loss", "D Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc", "D Penalty"] + (["D Layer Grad Norm Means", "D Layer Grad Norm Stds", "D Layer Grad Norm Maxes", "Clipping Params", "Grads Clipped"] if opt.use_grad_clip else []),
     opt.log_every / opt.batch_size,
     opt.output_dir + "log.csv"
 )
@@ -174,17 +181,47 @@ def sample(epoch, batch):
 #   Training functions  #
 # # # # # # # # # # # # #
 
+def get_adaptive_clipping_params():
+    mean_img = mean_sampler.sample(opt.batch_size)
+    _, mean_labels = gen_z_y(opt.batch_size)
+
+    if opt.grad_clip_split:
+        d_fake_loss = 0
+    else:
+        d_fake, fake_img = eval_G_D(*gen_z_y(opt.batch_size))
+        fake_img = fake_img.detach()
+        d_fake_loss = D.fake_loss(d_fake, opt.d_device)
+
+    d_real = D(mean_img.to(opt.d_device), None if mean_labels is None else mean_labels.to(opt.d_device))
+    d_real_loss = D.real_loss(d_real, opt.d_device)
+
+    d_loss = d_real_loss + d_fake_loss
+
+    d_loss.backward()
+
+    with torch.no_grad():
+        for i, p in enumerate(D.parameters()):
+            privacy_engine.max_grad_norm[i] = p.grad_sample[0,i].view(opt.batch_size, -1).norm(2, dim=1).max() * opt.adaptive_clipping_scalar[i]
+            privacy_engine.clipper.norm_clipper.flat_values[i] = privacy_engine.max_grad_norm[i]
+
+    d_optimizer.zero_grad()
+
 def train_D(img, labels, z, y, use_dp=False):
     d_optimizer.zero_grad()
     util.freeze(G)
     batch_size = img.size(0)
 
-    if opt.use_imm_sens and use_dp:
+    use_grad_clip = opt.use_grad_clip and use_dp
+    use_imm_sens = opt.use_imm_sens and use_dp
+
+    if use_imm_sens:
         img.requires_grad = True
         labels.requires_grad = True
 
-    if opt.use_dp_per_sample and use_dp:
+    if use_grad_clip:
         privacy_engine.enable_hooks()
+        if opt.grad_clip_per_layer and opt.grad_clip_adaptive:
+            get_adaptive_clipping_params()
 
     d_fake, fake_img = eval_G_D(z, y)
     fake_img = fake_img.detach()
@@ -195,27 +232,67 @@ def train_D(img, labels, z, y, use_dp=False):
 
     d_loss = d_real_loss + d_fake_loss
 
-    if opt.use_imm_sens and use_dp:
-        privacy_engine.calc_sens(d_real_loss, img if opt.unconditional else (img, labels), opt.d_device)
-    if opt.use_dp_per_sample and use_dp:
+    if use_imm_sens:
+        privacy_engine.backward(img if opt.unconditional else zip(img, labels))
+    if use_grad_clip:
         d_loss.backward()
-        privacy_engine.clip()
-        if opt.use_split_grad_clip:
-            privacy_engine.accum_grads_across_passes()
+
+        with torch.no_grad():
+            # Log grad norms for real loss
+            grad_norms = []
+            real_grad_norms = []
+            for p in D.parameters():
+                grad_norms.append([p.grad_sample[1,j].view(-1).norm(2).cpu().item() for j in range(p.grad_sample.size(1))])
+                real_grad_norms.append(p.grad.view(-1).norm(2).cpu().item())
+            grad_norms = np.array(grad_norms)
+            logger.stats["D Layer Grad Norm Means"] += grad_norms.mean(axis=1)
+            logger.stats["D Layer Grad Norm Stds"] += grad_norms.std(axis=1)
+            logger.stats["D Layer Grad Norm Maxes"] += grad_norms.max(axis=1)
+            logger.stats["Clipping Params"] += np.array(privacy_engine.max_grad_norm)
+
+            # Log clipping rates for real loss
+            all_norms = opacus.utils.tensor_utils.calc_sample_norms(
+                named_params=privacy_engine.clipper._named_grad_samples(),
+                flat=not privacy_engine.clipper.norm_clipper.is_per_layer,
+            )
+            clipping_factors = privacy_engine.clipper.norm_clipper.calc_clipping_factors(all_norms)
+            grads_clipped = []
+            for cf in clipping_factors:
+                grads_clipped.append((cf[1].reshape(-1).cpu().numpy() < 0.99).mean())
+            logger.stats["Grads Clipped"] += np.array(grads_clipped)
 
         privacy_engine.disable_hooks()
+
+        privacy_engine.clip()
+
+        if opt.grad_clip_split:
+            privacy_engine.accum_grads_across_passes()
 
     penalty = torch.tensor(0)
     if len(opt.penalty) > 0:
         # Calculate penalties
 
         penalty_real_data = (mean_sampler.sample(batch_size) if opt.penalty_use_mean_samples else img).to(opt.d_device)
-        penalty_per_sample = opt.use_dp_per_sample and not opt.penalty_use_mean_samples and use_dp
 
-        if opt.use_dp_per_sample and use_dp:
+        if use_grad_clip:
             # Using per-sample grads so penalty must be added to summed_grad manually
 
-            if penalty_per_sample:
+            if opt.penalty_use_mean_samples:
+                # Penalty uses mean samples so does not need to be calculated per-sample
+                privacy_engine.accumulate_batch()
+
+                penalty = calc_penalty(D, opt.penalty, penalty_real_data, fake_img, device=opt.d_device)
+                d_loss += penalty
+
+                # Manually calculate gradient and add to summed_grad (where accumulated per-sample grads are stored)
+                penalty_grad = autograd.grad(penalty, D.parameters(), create_graph=False, retain_graph=False, allow_unused=True)
+                with torch.no_grad():
+                    for j, p in enumerate(D.parameters()):
+                        p.summed_grad += 0 if penalty_grad[j] is None else penalty_grad[j] * opt.batch_size # multiply by batch size because summed_grad is sum and not mean
+
+            else:
+                # TO-DO: Per-sample penalty causes memory leak
+
                 # Penalty accesses sensitive data and must be calculated per-sample (which is slow)
                 penalties = calc_penalty(D, opt.penalty, penalty_real_data, fake_img, device=opt.d_device, per_sample=True)
                 penalty = penalties.mean(dim=0)
@@ -229,34 +306,18 @@ def train_D(img, labels, z, y, use_dp=False):
 
                 privacy_engine.clip()
                 privacy_engine.accumulate_batch()
-            else:
-                privacy_engine.accumulate_batch()
-
-                penalty = calc_penalty(D, opt.penalty, penalty_real_data, fake_img, device=opt.d_device)
-                d_loss += penalty
-
-                penalty_grad = batch_size * autograd.grad(penalty, D.parameters(), create_graph=False, retain_graph=False, allow_unused=True)
-                with torch.no_grad():
-                    for j, p in enumerate(D.parameters()):
-                        p.summed_grad += 0 if penalty_grad[j] is None else penalty_grad[j]
         else:
-            # No DP or using immediate sensitivity
+            # Not grad clipping, can just call backward on penalty normally
             penalty = calc_penalty(D, opt.penalty, penalty_real_data, fake_img, device=opt.d_device)
             d_loss += penalty
             d_loss.backward()
 
     else:
         # No penalties
-        if opt.use_dp_per_sample and use_dp:
+        if use_grad_clip:
             privacy_engine.accumulate_batch()
         else:
             d_loss.backward()
-
-    grad_field = "summed_grad" if opt.use_dp_per_sample and use_dp else "grad"
-    scale = 1/batch_size if opt.use_dp_per_sample and use_dp else 1
-    layer_grad_norms = torch.stack([scale*getattr(p, grad_field).view(-1).norm(2) for p in D.parameters()], dim=0)
-    logger.stats["D Layer Grad Norms"] += layer_grad_norms
-    logger.stats["D Grad Norm"] += layer_grad_norms.mean(dim=0)
 
     d_optimizer.step()
     util.unfreeze(G)
@@ -269,11 +330,11 @@ def train_D(img, labels, z, y, use_dp=False):
     logger.stats["D Fake Acc"] += 100*np.mean(d_fake.detach().cpu().numpy() < 0)
     logger.stats["D Penalty"] += penalty.item()
 
-def train_G(z, x):
+def train_G(z, y):
     g_optimizer.zero_grad()
     util.freeze(D)
 
-    d_fake, _ = eval_G_D(*gen_z(opt.batch_size))
+    d_fake, _ = eval_G_D(z, y)
     g_loss = G.loss(d_fake, opt.d_device)
 
     g_loss.backward()
@@ -285,15 +346,15 @@ def train_G(z, x):
 
 def train(epoch, batch_i, real_images_batch, real_labels_batch, use_dp=False):
     real_images_batch = real_images_batch.to(opt.d_device)
-    real_labels_batch = F.one_hot(real_labels_batch.to(opt.d_device), num_classes=opt.n_classes).float()
+    real_labels_batch = None if opt.unconditional else F.one_hot(real_labels_batch.to(opt.d_device), num_classes=opt.n_classes).float()
     batch_size = real_images_batch.size(0)
 
     # Train discriminator
-    train_D(real_images_batch, real_labels_batch, *gen_z(batch_size), use_dp=use_dp)
+    train_D(real_images_batch, real_labels_batch, *gen_z_y(batch_size), use_dp=use_dp)
 
     # Train generator
     if batch_i % opt.n_d_steps == 0: # only train generator every n_d_steps iterations
-        train_G(*gen_z(batch_size))
+        train_G(*gen_z_y(batch_size))
 
     # Logging and profiling
     if opt.profile_training:
@@ -324,7 +385,7 @@ with profile(
     # Train on mean samples
     for iter in range(opt.iter_on_mean_samples):
         mean_img = mean_sampler.sample(opt.batch_size)
-        _, mean_labels = gen_z(opt.batch_size)
+        _, mean_labels = gen_z_y(opt.batch_size)
 
         train(-1, iter, mean_img, mean_labels, use_dp=False)
 
@@ -358,6 +419,6 @@ with profile(
 
 
 print("Finished training.")
-util.save_model(opt.n_epochs, D, d_optimizer, d_loss, opt.output_dir+"saves/D-"+str(epoch+1))
-util.save_model(opt.n_epochs, G, g_optimizer, g_loss, opt.output_dir+"saves/G-"+str(epoch+1))
+util.save_model(opt.n_epochs, D, d_optimizer, 0, opt.output_dir+"saves/D-"+str(epoch+1))
+util.save_model(opt.n_epochs, G, g_optimizer, 0, opt.output_dir+"saves/G-"+str(epoch+1))
 logger.close()
