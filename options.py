@@ -20,13 +20,12 @@ MNIST_DEFAULTS = {
     "train_set_size": 60000,
     "g_latent_dim": 100,
     "n_d_steps": 1,
-    "unconditional": False,
     "adam_b1": 0.9,
     "adam_b2": 0.999,
     "penalty": [],
-    "iter_on_mean_samples": 0,
     "delta": 1e-5,
     "sigma": 5.0,
+    "grad_clip_mode": "standard",
     "C": 4.0,
     "C_weight": 10.0,
     "C_bias": 1.0,
@@ -48,21 +47,23 @@ CELEBA_DEFAULTS = {
     "batch_size": 128,
     "batch_split_size": 32,
     "train_set_size": 180000,
+    "public_set_size": 0,
     "g_latent_dim": 128,
     "n_d_steps": 5,
-    "unconditional": True,
     "adam_b1": 0.0,
     "adam_b2": 0.9,
     "penalty": ["WGAN-GP"],
     "iter_on_mean_samples": 0,
     "mean_sample_size": 300,
-    "num_mean_samples": 32,
     "mean_sample_noise_std": 0.12,
     "delta": 1e-6,
-    "sigma": 0.2,
-    "C": 30.0,
-    "C_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500],
-    "adaptive_clipping_scalar": [20, 15, 20, 10, 20, 10, 15, 5, 10],
+    "sigma": 0.5,
+    "imm_sens_scaling_vec": [20, 2, 15, 1.5, 10, 1.5, 10, 1, 30],
+    "imm_sens_scaling_mode": "moving-avg-pl",
+    "grad_clip_mode": "moving-avg-pl",
+    "C": 200,
+    "C_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500], # These model specific defaults should be handled elsewhere
+    "adaptive_scalar": [2, 2, 2, 2, 2, 2, 2, 1.5, 1.5], # These are meant for public data, not mean sample data but act as defaults for both
     "save_every": 10,
     "log_every": 20000,
     "sample_every": 60000,
@@ -108,31 +109,39 @@ def parse():
 
     parser.add_argument("--g_latent_dim", type=int, default=None)
     parser.add_argument("--n_d_steps", type=int, default=None)
-    parser.add_argument("--unconditional", action="store_true", default=False)
+    parser.add_argument("--conditional", type=bool, default=False)
     parser.add_argument("--adam_b1", type=float, default=None)
     parser.add_argument("--adam_b2", type=float, default=None)
-    parser.add_argument("--penalty", type=str, nargs="*", choices=["WGAN-GP", "WGAN-GP1", "DRAGAN", "DRAGAN1"], default=None)
+    parser.add_argument("--penalty", type=str, nargs="*", choices=[None, "WGAN-GP", "WGAN-GP1", "DRAGAN", "DRAGAN1"], default=None, help="Specify a gradient penalty or list of gradient penalties. Names ending with a 1 indicate a one-sided penalty (only penalize being over the threshold and not also under).")
 
-    parser.add_argument("-pums", "--penalty_use_mean_samples", action="store_true", default=False)
-    parser.add_argument("-ioms", "--iter_on_mean_samples", type=int, default=None)
+    parser.add_argument("-pss", "--public_set_size", type=int, default=0)
+    parser.add_argument("-nms", "--num_mean_samples", type=int, default=0)
+    parser.add_argument("-pupd", "--penalty_use_public_data", type=bool, default=True)
+    parser.add_argument("-wi", "--warmup_iter", type=int, default=0)
+
     parser.add_argument("--mean_sample_size", type=int, default=None)
-    parser.add_argument("--num_mean_samples", type=int, default=None)
     parser.add_argument("--mean_sample_noise_std", type=int, default=None)
 
     parser.add_argument("--delta", type=float, default=None)
     parser.add_argument("--sigma", type=float, default=None)
     parser.add_argument("-eb", "--epsilon_budget", type=float, default=None)
 
-    parser.add_argument("-is", "--use_imm_sens", action="store_true", default=False)
-    parser.add_argument("-ispp", "--imm_sens_per_param", action="store_true", default=False)
+    parser.add_argument("-uis", "--use_imm_sens", action="store_true", default=False)
+    parser.add_argument("-ispp", "--imm_sens_per_param", type=bool, default=False, help="Calculates IS for each parameter separately.")
+    parser.add_argument("-issv", "--imm_sens_scaling_vec", type=float, nargs="*", default=None)
+    parser.add_argument("-issm", "--imm_sens_scaling_mode", type=str, choices=[None, "constant-pl", "moving-avg-pl"], default=None,
+        help="constant per-layer, moving avg per-layer (updates v = v*beta + grad_norm*(1-beta) per layer)")
 
-    parser.add_argument("-gc", "--use_grad_clip", action="store_true", default=False)
-    parser.add_argument("-gcs", "--grad_clip_split", action="store_true", default=False)
+    parser.add_argument("-ugc", "--use_grad_clip", action="store_true", default=False)
+    parser.add_argument("-gcs", "--grad_clip_split", type=bool, default=True)
+    parser.add_argument("-gcm", "--grad_clip_mode", type=str, choices=["standard", "constant-pl", "adaptive-pl", "moving-avg-pl"], default=None,
+        help="Gradient clipping mode: standard (clips overall grad norm), constant per-layer, adaptive per-layer (uses either public partition of data or public mean samples and scales adaptive_stat of the data by adaptive_scalar per layer), moving avg per-layer (updates v = v*beta + grad_norm*target_scale*(1-beta) per layer)")
     parser.add_argument("--C", type=float, default=None)
-    parser.add_argument("-gccpl", "--grad_clip_constant_per_layer", action="store_true", default=False)
-    parser.add_argument("-gca", "--grad_clip_adaptive", action="store_true", default=False)
-    parser.add_argument("-acs", "--adaptive_clipping_scalar", type=float, nargs="*", default=None)
-    parser.add_argument("--C_per_layer", type=float, nargs="*", default=None)
+    parser.add_argument("-cpl", "--C_per_layer", type=float, nargs="*", default=None)
+    parser.add_argument("-as", "--adaptive_scalar", type=float, nargs="*", default=None)
+    parser.add_argument("--adaptive_stat", choices=["mean", "max"], default="mean")
+    parser.add_argument("-mag", "--moving_avg_target", type=float, default=5) # Only for GC (value for IS is just 1)
+    parser.add_argument("-mab", "--moving_avg_beta", type=float, default=0.98) # Applies to both GC and IS
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
     parser.add_argument("--log_every", type=int, default=None) # samples, prints and logs to csv
@@ -163,11 +172,23 @@ def parse():
         opt.sample_every = max((opt.sample_every // opt.batch_size)*opt.batch_size, 1)
 
         opt.use_dp = opt.use_grad_clip or opt.use_imm_sens
-        opt.use_mean_samples = opt.iter_on_mean_samples > 0 or opt.penalty_use_mean_samples or (opt.grad_clip_adaptive and opt.use_grad_clip)
-        opt.grad_clip_per_layer = opt.grad_clip_constant_per_layer or opt.grad_clip_adaptive
+        opt.use_grad_clip_per_layer = opt.grad_clip_mode != "standard"
 
-        if opt.grad_clip_adaptive and not opt.grad_clip_per_layer:
-            raise Exception("Adaptive clipping only applies for per-layer clipping.")
+        # Check for incompatible configurations
+        if opt.imm_sens_per_param and not opt.imm_sens_scaling_mode is None:
+            raise Exception("Calculating IS per parameter does not require per parameter scaling. Scaling estimates per-parameter calculation.")
+        if opt.imm_sens_per_param:
+            print("Not sure if immediate sensitivity per parameter is working properly.")
+        if opt.public_set_size > 0 and opt.num_mean_samples > 0:
+            raise Exception("Both public data partition and mean samples were configured, please select only one.")
+        if len(opt.penalty) > 0 and opt.use_grad_clip and opt.penalty_use_public_data and opt.public_set_size < 1 and opt.num_mean_samples < 1:
+            raise Exception("In order to enable gradient penalty using public data, please enable mean sampling by setting num_mean_samples or public data by setting public_set_size.")
+        if len(opt.penalty) > 0 and opt.use_grad_clip and opt.public_set_size < 1 and opt.num_mean_samples < 1:
+            print("Currently configured to calculate penalty per-sample. It is strongly recommended that you use public data or mean samples for gradient penalties when using grad clipping.")
+        if opt.conditional and not (opt.penalty is None or len(opt.penalty) < 1):
+            raise Exception("Penalties not yet implemented for conditional architectures.")
+        if opt.conditional and opt.iter_on_mean_samples > 0:
+            raise Exception("Mean sampling not yet implemented for conditional architectures.")
 
         # Generate output directory if not specified
         if opt.output_dir == None or opt.output_dir == "":
@@ -182,11 +203,6 @@ def parse():
             opt.manual_seed = random.randint(1, 1000000)
         random.seed(opt.manual_seed)
         torch.manual_seed(opt.manual_seed)
-
-        if not opt.unconditional and not (opt.penalty is None or len(opt.penalty) < 1):
-            raise Exception("Penalties not yet implemented for conditional architectures.")
-        if not opt.unconditional and opt.iter_on_mean_samples > 0:
-            raise Exception("Mean sampling not yet implemented for conditional architectures.")
     else:
         # Load options if resuming
         loaded_opt = load_opt(opt.resume_path + "opt.txt")
