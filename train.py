@@ -86,7 +86,7 @@ def setup_privacy_engine():
         privacy_engine = PrivacyEngine(
             D, **privacy_params,
             accum_passes=not opt.grad_clip_split,
-            num_private_passes=1 if opt.grad_clip_split else None
+            num_private_passes=1 if opt.grad_clip_split else None,
             auto_clip_and_accum_on_step=False,
             max_grad_norm=opt.clipping_param if opt.grad_clip_mode == "standard" else opt.clipping_param_per_layer,
             use_moving_avg_mgn=opt.grad_clip_mode == "moving-avg-pl",

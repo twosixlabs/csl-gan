@@ -26,9 +26,7 @@ MNIST_DEFAULTS = {
     "delta": 1e-5,
     "sigma": 5.0,
     "grad_clip_mode": "standard",
-    "C": 4.0,
-    "C_weight": 10.0,
-    "C_bias": 1.0,
+    "clipping_param": 4.0,
     "save_every": 50,
     "log_every": 100000, # Gets rounded down to be 1 epoch
     "sample_every": 1200000,
@@ -61,8 +59,8 @@ CELEBA_DEFAULTS = {
     "imm_sens_scaling_vec": [20, 2, 15, 1.5, 10, 1.5, 10, 1, 30],
     "imm_sens_scaling_mode": "moving-avg-pl",
     "grad_clip_mode": "moving-avg-pl",
-    "C": 200,
-    "C_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500], # These model specific defaults should be handled elsewhere
+    "clipping_param": 200,
+    "clipping_param_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500], # These model specific defaults should be handled elsewhere
     "adaptive_scalar": [2, 2, 2, 2, 2, 2, 2, 2, 2],
     "save_every": 10,
     "log_every": 20000,
