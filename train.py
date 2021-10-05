@@ -135,9 +135,11 @@ def eval_G_D(z, y=None):
         return torch.cat(ret_out), torch.cat(ret_img)
 
 def update_adaptive_clipping_params():
+    # NOTE: For some reason this is giving values about 1/10 what they should be
+
     img, labels = None, None
     if opt.public_set_size > 0:
-        img, labels = next(iter(public_dataloader))
+        img, labels = next(iter(public_dataloader)) # TO-DO: Update to use batch_size from real images so that numbers are more accurate
         img = torch.tensor(img)
         labels = labels if opt.conditional else None
     else:
@@ -160,8 +162,8 @@ def update_adaptive_clipping_params():
 
     with torch.no_grad():
         r = []
-        for i, p in enumerate(D.parameters()):
-            gn = p.grad_sample[0,i].view(opt.batch_size, -1).norm(2, dim=1)
+        for p in D.parameters():
+            gn = p.grad_sample[0].view(opt.batch_size, -1).norm(2, dim=1)
 
             if opt.adaptive_stat == "mean":
                 r.append(gn.mean().cpu().item())
@@ -222,10 +224,8 @@ def sample(epoch, batch):
 
 def update_grad_logging():
     grad_norms = []
-    real_grad_norms = []
     for p in D.parameters():
         grad_norms.append([p.grad_sample[1,j].view(-1).norm(2).cpu().item() for j in range(p.grad_sample.size(1))])
-        real_grad_norms.append(p.grad.view(-1).norm(2).cpu().item())
     grad_norms = np.array(grad_norms)
     logger.stats["D Layer Grad Norm Means"] += grad_norms.mean(axis=1)
     logger.stats["D Layer Grad Norm Stds"] += grad_norms.std(axis=1)
