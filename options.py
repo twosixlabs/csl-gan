@@ -63,7 +63,7 @@ CELEBA_DEFAULTS = {
     "grad_clip_mode": "moving-avg-pl",
     "C": 200,
     "C_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500], # These model specific defaults should be handled elsewhere
-    "adaptive_scalar": [2, 2, 2, 2, 2, 2, 2, 1.5, 1.5], # These are meant for public data, not mean sample data but act as defaults for both
+    "adaptive_scalar": [2, 2, 2, 2, 2, 2, 2, 2, 2],
     "save_every": 10,
     "log_every": 20000,
     "sample_every": 60000,
@@ -136,11 +136,11 @@ def parse():
     parser.add_argument("-gcs", "--grad_clip_split", type=bool, default=True)
     parser.add_argument("-gcm", "--grad_clip_mode", type=str, choices=["standard", "constant-pl", "adaptive-pl", "moving-avg-pl"], default=None,
         help="Gradient clipping mode: standard (clips overall grad norm), constant per-layer, adaptive per-layer (uses either public partition of data or public mean samples and scales adaptive_stat of the data by adaptive_scalar per layer), moving avg per-layer (updates v = v*beta + grad_norm*target_scale*(1-beta) per layer)")
-    parser.add_argument("--C", type=float, default=None)
-    parser.add_argument("-cpl", "--C_per_layer", type=float, nargs="*", default=None)
+    parser.add_argument("-c", "--clipping_param", type=float, default=None)
+    parser.add_argument("-cpl", "--clipping_param_per_layer", type=float, nargs="*", default=None)
     parser.add_argument("-as", "--adaptive_scalar", type=float, nargs="*", default=None)
     parser.add_argument("--adaptive_stat", choices=["mean", "max"], default="mean")
-    parser.add_argument("-mag", "--moving_avg_target", type=float, default=5) # Only for GC (value for IS is just 1)
+    parser.add_argument("-mat", "--moving_avg_target", type=float, default=2.5) # Only for GC (value for IS is just 1)
     parser.add_argument("-mab", "--moving_avg_beta", type=float, default=0.98) # Applies to both GC and IS
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
