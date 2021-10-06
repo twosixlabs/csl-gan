@@ -190,10 +190,14 @@ fixed_z, fixed_y = gen_z_y(opt.sample_num)
 if opt.conditional:
     fixed_y = F.one_hot(torch.cat([torch.arange(opt.n_classes) for _ in range(opt.sample_num//opt.n_classes)]), num_classes=opt.n_classes).to(opt.g_device)
 
+gc_log_str = "\n=== Grad Norms ===\nMean Per Layer: {}\nStd Per Layer: {}\nMax Per Layer: {}\nClipping Params: {}\nGrads Clipped: {}"
+gc_log_stats = ["D Layer Grad Norm Means", "D Layer Grad Norm Stds", "D Layer Grad Norm Maxes", "Clipping Params", "Grads Clipped"]
+is_log_str = "\nIS - Mean: {:4.8f} - Min: {:4.8f} - Max: {:4.8f}"
+is_log_stats = ["IS Mean", "IS Min", "IS Max"]
 logger = Logger(
-    "G Loss: {:4.4f} | D Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%, Penalty: {:4.4f})" + ("\n=== Grad Norms ===\nMean Per Layer: {}\nStd Per Layer: {}\nMax Per Layer: {}\nClipping Params: {}\nGrads Clipped: {}" if opt.use_grad_clip else ""),
-    ["G Loss", "D Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc", "D Penalty"] + (["D Layer Grad Norm Means", "D Layer Grad Norm Stds", "D Layer Grad Norm Maxes", "Clipping Params", "Grads Clipped"] if opt.use_grad_clip else []),
-    opt.log_every / opt.batch_size,
+    "G Loss: {:4.4f} | D Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%, Penalty: {:4.4f})" + (gc_log_str if opt.use_grad_clip else "") + (is_log_str if opt.use_imm_sens else ""),
+    ["G Loss", "D Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc", "D Penalty"] + (gc_log_stats if opt.use_grad_clip else []) + (is_log_stats if opt.use_imm_sens else []),
+    (opt.log_every_epochs * opt.train_set_size if opt.log_every_epochs > 0 else opt.log_every) // opt.batch_size,
     opt.output_dir + "log.csv"
 )
 np.set_printoptions(precision=4, suppress=True, linewidth=999999)
@@ -245,6 +249,11 @@ def update_grad_logging():
     for cf in clipping_factors:
         grads_clipped.append((cf[1].reshape(-1).cpu().numpy() < 0.99).mean())
     logger.stats["Grads Clipped"] += np.array(grads_clipped)
+
+def update_is_logging():
+    logger.stats["IS Mean"] += privacy_engine.batch_sensitivity
+    logger.stats["IS Min"] = min(99999 if logger.stats["IS Min"] < 1e-8 else logger.stats["IS Min"], privacy_engine.batch_sensitivity * logger.interval) # Scale by logger.interval so when logger divides it it is shown as the original value
+    logger.stats["IS Max"] = max(logger.stats["IS Max"], privacy_engine.batch_sensitivity * logger.interval)
 
 
 # # # # # # # # # # # # #
@@ -347,6 +356,7 @@ def train_D(img, labels, z, y, use_dp=False):
                 privacy_engine.backward(d_loss, img if labels is None else (img, labels))
                 if opt.imm_sens_scaling_mode == "moving-avg-pl":
                     update_sens_moving_avg()
+                update_is_logging()
             else:
                 d_loss.backward()
 
@@ -358,6 +368,7 @@ def train_D(img, labels, z, y, use_dp=False):
             privacy_engine.backward(d_loss, img if labels is None else (img, labels))
             if opt.imm_sens_scaling_mode == "moving-avg-pl":
                 update_sens_moving_avg()
+            update_is_logging()
         else:
             d_loss.backward()
 

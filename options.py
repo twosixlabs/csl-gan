@@ -138,7 +138,7 @@ def parse():
     parser.add_argument("-cpl", "--clipping_param_per_layer", type=float, nargs="*", default=None)
     parser.add_argument("-as", "--adaptive_scalar", type=float, nargs="*", default=None)
     parser.add_argument("--adaptive_stat", choices=["mean", "max"], default="mean")
-    parser.add_argument("-mat", "--moving_avg_target", type=float, default=2.5) # Only for GC (value for IS is just 1)
+    parser.add_argument("-mat", "--moving_avg_target", type=float, default=5) # Only for GC (value for IS is just 1)
     parser.add_argument("-mab", "--moving_avg_beta", type=float, default=0.98) # Applies to both GC and IS
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
