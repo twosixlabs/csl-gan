@@ -195,8 +195,8 @@ gc_log_stats = ["D Layer Grad Norm Means", "D Layer Grad Norm Stds", "D Layer Gr
 is_log_str = "\nIS - Mean: {:4.8f} - Min: {:4.8f} - Max: {:4.8f}"
 is_log_stats = ["IS Mean", "IS Min", "IS Max"]
 logger = Logger(
-    "G Loss: {:4.4f} | D Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%, Penalty: {:4.4f})" + (gc_log_str if opt.use_grad_clip else "") + (is_log_str if opt.use_imm_sens else ""),
-    ["G Loss", "D Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc", "D Penalty"] + (gc_log_stats if opt.use_grad_clip else []) + (is_log_stats if opt.use_imm_sens else []),
+    "G Loss: {:4.4f} | D Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%, Penalty: {:4.4f})" + (gc_log_str if opt.use_grad_clip else "") + (is_log_str if opt.use_imm_sens and opt.imm_sens_scaling_mode is None else ""),
+    ["G Loss", "D Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc", "D Penalty"] + (gc_log_stats if opt.use_grad_clip else []) + (is_log_stats if opt.use_imm_sens and opt.imm_sens_scaling_mode is None else []),
     (opt.log_every_epochs * opt.train_set_size if opt.log_every_epochs > 0 else opt.log_every) // opt.batch_size,
     opt.output_dir + "log.csv"
 )
