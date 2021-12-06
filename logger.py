@@ -1,7 +1,7 @@
 import csv
 
 class Logger:
-    def __init__(self, str_format, stat_names, interval, csv_dir, epoch_batch_str_format="Epoch {} ({:2.1f}%) | ", write_header=True):
+    def __init__(self, str_format, stat_names, interval, csv_dir, epoch_batch_str_format="=== Epoch {} ({:2.1f}%) ===\n", write_header=True):
         self.stat_names = stat_names
         self.stats = {}
         for name in stat_names:

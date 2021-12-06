@@ -20,13 +20,21 @@ MNIST_DEFAULTS = {
     "train_set_size": 60000,
     "g_latent_dim": 100,
     "n_d_steps": 1,
+    "g_label_emb_mode": "concat",
+    "d_label_emb_mode": "concat",
     "adam_b1": 0.9,
     "adam_b2": 0.999,
     "penalty": [],
+    "iter_on_mean_samples": 0,
+    "mean_sample_size": 2000,
+    "mean_sample_noise_std": 0.06,
     "delta": 1e-5,
     "sigma": 5.0,
     "grad_clip_mode": "standard",
     "clipping_param": 4.0,
+    "tm_m": 10,
+    "tm_max_val": -1,
+    "tm_min_val": 1,
     "save_every": 50,
     "log_every": 100000, # Gets rounded down to be 1 epoch
     "sample_every": 1200000,
@@ -37,6 +45,8 @@ MNIST_DEFAULTS = {
 
 CELEBA_DEFAULTS = {
     "data_path": "/persist/datasets/celeba/img_align_celeba/all/",
+    "label_path": "/persist/datasets/celeba/Anno/list_attr_celeba.txt",
+    "label_attr": "Male",
     "model": "DeepConvResNet",
     "im_size": 64,
     "n_epochs": 1000,
@@ -48,6 +58,8 @@ CELEBA_DEFAULTS = {
     "public_set_size": 0,
     "g_latent_dim": 128,
     "n_d_steps": 5,
+    "g_label_emb_mode": "concat",
+    "d_label_emb_mode": "concat",
     "adam_b1": 0.0,
     "adam_b2": 0.9,
     "penalty": ["WGAN-GP"],
@@ -57,17 +69,19 @@ CELEBA_DEFAULTS = {
     "delta": 1e-6,
     "sigma": 0.5,
     "imm_sens_scaling_vec": [20, 2, 15, 1.5, 10, 1.5, 10, 1, 30],
-    "imm_sens_scaling_mode": "moving-avg-pl",
-    "grad_clip_mode": "moving-avg-pl",
+    "imm_sens_scaling_mode": "standard",
+    "grad_clip_mode": "standard",
     "clipping_param": 200,
     "clipping_param_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500], # These model specific defaults should be handled elsewhere
-    "adaptive_scalar": [2, 2, 2, 2, 2, 2, 2, 2, 2],
+    "tm_m": 10,
+    "tm_min_val": -1,
+    "tm_max_val": 1,
     "save_every": 10,
     "log_every": 20000,
     "sample_every": 60000,
     "sample_num": 25,
 
-    "n_classes": 5,
+    "n_classes": 2,
     "gp_lambda": 10 # Gradient penalty
 }
 
@@ -75,6 +89,21 @@ def fill_defaults(opt, default_dict):
     for key, val in default_dict.items():
         if not key in opt.__dict__ or opt.__dict__[key] is None or opt.__dict__[key] is False:
             opt.__dict__[key] = val
+
+def none_or_str(value):
+    if value == 'None':
+        return None
+    return value
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 def parse():
     parser = argparse.ArgumentParser()
@@ -84,6 +113,8 @@ def parse():
 
     parser.add_argument("dataset", type=str, choices=["MNIST", "CelebA"])
     parser.add_argument("-d", "--data_path", type=str, default=None)
+    parser.add_argument("-lp", "--label_path", type=str, default=None)
+    parser.add_argument("-la", "--label_attr", type=str, default=None)
     parser.add_argument("--model", type=str, choices=["Vanilla", "DeepConvResNet"], default=None)
     parser.add_argument("--im_size", type=int, default=None, choices=[64, 48])
     parser.add_argument("--download_mnist", default=False, action="store_true")
@@ -107,14 +138,21 @@ def parse():
 
     parser.add_argument("--g_latent_dim", type=int, default=None)
     parser.add_argument("--n_d_steps", type=int, default=None)
-    parser.add_argument("--conditional", type=bool, default=False)
+    parser.add_argument("-cond", "--conditional", action="store_true", default=False)
+    parser.add_argument("--g_label_emb_mode", type=str, choices=["embed", "concat"], default=None)
+    parser.add_argument("--d_label_emb_mode", type=str, choices=["embed", "concat"], default=None)
+    parser.add_argument("--conditional_arch", type=str, choices=["CGAN", "ACGAN"], help="Use standard conditional GAN architecture or use auxiliary classifier GAN architecture", default=None)
+    parser.add_argument("--aux_loss_type", type=str, choices=["wasserstein", "cross_entropy"], default="wasserstein")
+    parser.add_argument("--aux_loss_scalar", type=float, default=1)
+    parser.add_argument("--aux_penalty", type=str2bool, default=True)
+    parser.add_argument("--d_fake_aux_loss", type=str2bool, default=True, help="Experimentally determined that this should probably stay set to True (and this is consistent with ACGAN formulation)")
     parser.add_argument("--adam_b1", type=float, default=None)
     parser.add_argument("--adam_b2", type=float, default=None)
     parser.add_argument("--penalty", type=str, nargs="*", choices=[None, "WGAN-GP", "WGAN-GP1", "DRAGAN", "DRAGAN1"], default=None, help="Specify a gradient penalty or list of gradient penalties. Names ending with a 1 indicate a one-sided penalty (only penalize being over the threshold and not also under).")
 
     parser.add_argument("-pss", "--public_set_size", type=int, default=0)
     parser.add_argument("-nms", "--num_mean_samples", type=int, default=0)
-    parser.add_argument("-pupd", "--penalty_use_public_data", type=bool, default=True)
+    parser.add_argument("-pupd", "--penalty_use_public_data", type=str2bool, default=True)
     parser.add_argument("-wi", "--warmup_iter", type=int, default=0)
 
     parser.add_argument("--mean_sample_size", type=int, default=None)
@@ -123,23 +161,35 @@ def parse():
     parser.add_argument("--delta", type=float, default=None)
     parser.add_argument("--sigma", type=float, default=None)
     parser.add_argument("-eb", "--epsilon_budget", type=float, default=None)
+    parser.add_argument("-dpm", "--dp_mode", type=str, choices=["gc", "is", "tm", "sv"], default=None)
 
-    parser.add_argument("-uis", "--use_imm_sens", action="store_true", default=False)
-    parser.add_argument("-ispp", "--imm_sens_per_param", type=bool, default=False, help="Calculates IS for each parameter separately.")
+    parser.add_argument("-ispp", "--imm_sens_per_param", type=str2bool, default=False, help="Calculates IS for each parameter separately.")
     parser.add_argument("-issv", "--imm_sens_scaling_vec", type=float, nargs="*", default=None)
-    parser.add_argument("-issm", "--imm_sens_scaling_mode", type=str, choices=[None, "constant-pl", "moving-avg-pl"], default=None,
+    parser.add_argument("-issm", "--imm_sens_scaling_mode", type=str, choices=["standard", "constant-pl", "moving-avg-pl"], default=None,
         help="constant per-layer, moving avg per-layer (updates v = v*beta + grad_norm*(1-beta) per layer)")
 
-    parser.add_argument("-ugc", "--use_grad_clip", action="store_true", default=False)
-    parser.add_argument("-gcs", "--grad_clip_split", type=bool, default=True)
-    parser.add_argument("-gcm", "--grad_clip_mode", type=str, choices=["standard", "constant-pl", "adaptive-pl", "moving-avg-pl"], default=None,
-        help="Gradient clipping mode: standard (clips overall grad norm), constant per-layer, adaptive per-layer (uses either public partition of data or public mean samples and scales adaptive_stat of the data by adaptive_scalar per layer), moving avg per-layer (updates v = v*beta + grad_norm*target_scale*(1-beta) per layer)")
+    parser.add_argument("-gcs", "--grad_clip_split", type=str2bool, default=True)
+    parser.add_argument("-gcm", "--grad_clip_mode", type=str, choices=["standard", "adaptive", "constant-pl", "adaptive-pl"], default=None,
+        help="Gradient clipping mode: standard (clips overall grad norm), adaptive (adaptive-pl but not per-layer) constant per-layer, adaptive per-layer (uses either public partition of data or public mean samples and scales adaptive_stat of the data by adaptive_scalar per layer), moving avg per-layer (updates v = v*beta + grad_norm*target_scale*(1-beta) per layer)")
     parser.add_argument("-c", "--clipping_param", type=float, default=None)
     parser.add_argument("-cpl", "--clipping_param_per_layer", type=float, nargs="*", default=None)
-    parser.add_argument("-as", "--adaptive_scalar", type=float, nargs="*", default=None)
+    parser.add_argument("-as", "--adaptive_scalar", type=float, default=1)
     parser.add_argument("--adaptive_stat", choices=["mean", "max"], default="mean")
-    parser.add_argument("-mat", "--moving_avg_target", type=float, default=5) # Only for GC (value for IS is just 1)
-    parser.add_argument("-mab", "--moving_avg_beta", type=float, default=0.98) # Applies to both GC and IS
+
+    parser.add_argument("--smooth_sens_t", type=float, default=0.01)
+    parser.add_argument("--tm_m", type=int, default=None)
+    parser.add_argument("--tm_max_val", type=float, default=None)
+    parser.add_argument("--tm_min_val", type=float, default=None)
+    parser.add_argument("--tm_rho_per_epoch", type=float, default=10)
+    parser.add_argument("--tm_sens_compute_bs", type=float, default=None, help="Batch size for batched computation of trimmed mean sensitivity. If not set will default to double batch_size.")
+
+    parser.add_argument("--clip_propogating_grads", type=str2bool, default=False)
+    parser.add_argument("--prop_grad_clip_param", type=float, default=0.01)
+    parser.add_argument("--prop_grad_clip_param_pl", type=float, nargs="*", default=None)
+    parser.add_argument("--forward_input_clip_param", type=float, default=20)
+    parser.add_argument("--forward_input_clip_param_pl", type=float, nargs="*", default=None)
+    parser.add_argument("-pgcaas", "--pgc_auto_activation_scale", type=float, default=0.2)
+    parser.add_argument("-pgcawgs", "--pgc_auto_weight_grad_scale", type=float, default=1e-3)
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
     parser.add_argument("--log_every", type=int, default=None) # samples, prints and logs to csv
@@ -169,8 +219,11 @@ def parse():
         opt.log_every = max((opt.log_every // opt.batch_size)*opt.batch_size, 1)
         opt.sample_every = max((opt.sample_every // opt.batch_size)*opt.batch_size, 1)
 
-        opt.use_dp = opt.use_grad_clip or opt.use_imm_sens
-        opt.use_grad_clip_per_layer = opt.grad_clip_mode != "standard"
+        opt.use_dp = not opt.dp_mode is None
+        opt.use_grad_clip_per_layer = opt.grad_clip_mode != "standard" and opt.grad_clip_mode != "adaptive"
+        opt.per_sample_grad = opt.dp_mode in ["gc", "tm", "sv"]
+
+        opt.is_acgan = opt.conditional and opt.conditional_arch == "ACGAN"
 
         # Check for incompatible configurations
         if opt.imm_sens_per_param and not opt.imm_sens_scaling_mode is None:
@@ -179,14 +232,12 @@ def parse():
             print("Not sure if immediate sensitivity per parameter is working properly.")
         if opt.public_set_size > 0 and opt.num_mean_samples > 0:
             raise Exception("Both public data partition and mean samples were configured, please select only one.")
-        if len(opt.penalty) > 0 and opt.use_grad_clip and opt.penalty_use_public_data and opt.public_set_size < 1 and opt.num_mean_samples < 1:
+        if len(opt.penalty) > 0 and opt.dp_mode == "gc" and opt.penalty_use_public_data and opt.public_set_size < 1 and opt.num_mean_samples < 1:
             raise Exception("In order to enable gradient penalty using public data, please enable mean sampling by setting num_mean_samples or public data by setting public_set_size.")
-        if len(opt.penalty) > 0 and opt.use_grad_clip and opt.public_set_size < 1 and opt.num_mean_samples < 1:
+        if len(opt.penalty) > 0 and opt.dp_mode == "gc" and opt.public_set_size < 1 and opt.num_mean_samples < 1:
             print("Currently configured to calculate penalty per-sample. It is strongly recommended that you use public data or mean samples for gradient penalties when using grad clipping.")
-        if opt.conditional and not (opt.penalty is None or len(opt.penalty) < 1):
-            raise Exception("Penalties not yet implemented for conditional architectures.")
-        if opt.conditional and opt.iter_on_mean_samples > 0:
-            raise Exception("Mean sampling not yet implemented for conditional architectures.")
+        if (opt.g_label_emb_mode != "concat" or opt.d_label_emb_mode != "concat") and opt.model == "Vanilla":
+            raise Exception("Vanilla model with embedded labels not implemented")
 
         # Generate output directory if not specified
         if opt.output_dir == None or opt.output_dir == "":

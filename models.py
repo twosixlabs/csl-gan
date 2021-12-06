@@ -2,134 +2,54 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-class UpsampleConv(nn.Module):
-    def __init__(self, in_ch, out_ch, filter_size, bias=True):
+# Abstract classes for generator and discriminator
+
+class Generator(nn.Module):
+    def __init__(self, z_dim=100, out_ch=3, n_classes=1, emb_mode="concat", bn=True):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, filter_size, padding="same", bias=bias)
-
-    def forward(self, x):
-        o = torch.cat([x, x, x, x], 1)
-        o = F.pixel_shuffle(o, 2)
-        o = self.conv(o)
-        return o
-
-class ResBlockUp(nn.Module):
-    def __init__(self, in_ch, out_ch, filter_size, bn=True):
-        super().__init__()
-        self.shortcut = UpsampleConv(in_ch, out_ch, 1)
-        self.bn1 = nn.BatchNorm2d(in_ch) if bn else nn.GroupNorm(32, in_ch)
-        self.convUp = UpsampleConv(in_ch, out_ch, filter_size, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_ch) if bn else nn.GroupNorm(32, out_ch)
-        self.conv = nn.Conv2d(out_ch, out_ch, filter_size, padding="same")
-
-    def forward(self, x):
-        s = self.shortcut(x)
-
-        o = self.bn1(x)
-        o = F.relu(o)
-        o = self.convUp(o)
-        o = self.bn2(o)
-        o = F.relu(o)
-        o = self.conv(o)
-
-        return o + s
-
-class UpsampleConv(nn.Module):
-    def __init__(self, in_ch, out_ch, filter_size, bias=True):
-        super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, filter_size, padding="same", bias=bias)
-
-    def forward(self, x):
-        o = torch.cat([x, x, x, x], 1)
-        o = F.pixel_shuffle(o, 2)
-        o = self.conv(o)
-        return o
-
-class ResBlockUp(nn.Module):
-    def __init__(self, in_ch, out_ch, filter_size, bn=True):
-        super().__init__()
-        self.shortcut = UpsampleConv(in_ch, out_ch, 1)
-        self.bn1 = nn.BatchNorm2d(in_ch) if bn else nn.GroupNorm(32, in_ch)
-        self.convUp = UpsampleConv(in_ch, out_ch, filter_size, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_ch) if bn else nn.GroupNorm(32, out_ch)
-        self.conv = nn.Conv2d(out_ch, out_ch, filter_size, padding="same")
-
-    def forward(self, x):
-        s = self.shortcut(x)
-
-        o = self.bn1(x)
-        o = F.relu(o)
-        o = self.convUp(o)
-        o = self.bn2(o)
-        o = F.relu(o)
-        o = self.conv(o)
-
-        return o + s
-
-class DCResNetGenerator(nn.Module):
-    def __init__(self, z_dim, channels, first_filter_size, bn, out_ch=3, n_classes=0):
-        super().__init__()
-        self.first_filter_size = first_filter_size
-
-        self.linIn = nn.Linear(z_dim + n_classes, self.first_filter_size**2*channels[0])
-
-        self.blocks = []
-        for i in range(1, len(channels)):
-            self.blocks.append(ResBlockUp(channels[i-1], channels[i], 5, bn=bn))
-        self.blocks = nn.ModuleList(self.blocks)
-
-        self.bn = nn.BatchNorm2d(channels[-1]) if bn else nn.GroupNorm(32, channels[-1])
-        self.convOut = nn.Conv2d(channels[-1], out_ch, out_ch, padding="same")
-
+        self.z_dim = z_dim
+        self.out_ch = out_ch
+        self.n_classes = n_classes
+        self.emb_mode = emb_mode
+        self.bn = bn
+        self.emb = nn.Embedding(self.n_classes, self.z_dim) if self.n_classes > 1 and self.emb_mode == "embed" else None
 
     def forward(self, z, y=None):
-        x = z if y is None else torch.cat((z, y), dim=1)
-        x = self.linIn(x)
-        x = x.reshape(z.size(0), -1, self.first_filter_size, self.first_filter_size)
-
-        for block in self.blocks:
-            x = block(x)
-
-        x = self.bn(x)
-        x = F.relu(x)
-        x = self.convOut(x)
-        return torch.tanh(x)
+        raise NotImplementedError("Abstract method")
 
     def loss(self, d_output, device):
-        return -torch.mean(d_output)
+        raise NotImplementedError("Abstract method")
 
-class DCResNetDiscriminator(nn.Module):
-    def __init__(self, channels, last_filter_size, n_classes=0):
+class Discriminator(nn.Module):
+    def __init__(self, n_classes=0, emb_mode="concat", conditional_arch="CGAN", aux_loss_type="wasserstein", aux_loss_scalar=1):
         super().__init__()
-        self.blocks = []
+        self.n_classes = n_classes
+        self.emb_mode = emb_mode
+        self.conditional_arch = conditional_arch
+        self.aux_loss_scalar = aux_loss_scalar
+        self.aux_loss_type = aux_loss_type
 
-        for i in range(1, len(channels)):
-            self.blocks.append(nn.Conv2d(channels[i-1], channels[i], 5, stride=2, padding=2))
-        self.blocks = nn.ModuleList(self.blocks)
+        if n_classes > 1:
+            if emb_mode == "embed":
+                self.emb = nn.Embedding(n_classes, size)
 
-        size = channels[-1]*last_filter_size**2 + n_classes
+            if self.conditional_arch == "ACGAN":
+                self.emb_mode = None
 
-        if n_classes > 0:
-            self.linOut = nn.Sequential(
-                nn.Linear(size, size//5),
-                nn.LeakyReLU(0.2),
-                nn.Linear(size//5, 1)
-            )
-        else:
-            self.linOut = nn.Linear(size, 1, bias=False)
+                if self.aux_loss_type == "cross_entropy":
+                    self.aux_criterion = nn.CrossEntropyLoss()
 
-    def forward(self, x, y=None):
-        o = x
-        for block in self.blocks:
-            o = F.leaky_relu(block(o), 0.2)
-
-        o = o.reshape(x.size(0), -1)
-        o = o if y is None else torch.cat((o, y), dim=1)
-        o = self.linOut(o)
-        return o
+    def forward(self, x, y=None, aux=True):
+        raise NotImplementedError("Abstract method")
 
     def real_loss(self, output, device):
-        return -torch.mean(output)
+        raise NotImplementedError("Abstract method")
 
     def fake_loss(self, output, device):
-        return torch.mean(output)
+        raise NotImplementedError("Abstract method")
+
+    def aux_loss(self, output, labels, device):
+        if self.aux_loss_type == "wasserstein":
+            return self.aux_loss_scalar * torch.sum(torch.mul(F.one_hot(labels, self.n_classes)*(-2)+1, torch.sigmoid(output)) / torch.sum(F.one_hot(labels, self.n_classes), dim=0)[labels].unsqueeze(dim=1).expand_as(output))
+        else:
+            return self.aux_loss_scalar * self.aux_criterion(output, labels)
