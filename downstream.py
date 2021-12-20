@@ -19,6 +19,7 @@ import csv
 
 import options
 import util
+import init_util
 
 CLASSIFIERS = ["svm", "dt", "lr", "rf", "gnb", "bnb", "ab", "mlp"]
 
@@ -28,7 +29,7 @@ parser.add_argument("path", type=str, help="Path to the output folder containing
 parser.add_argument("-e", "--epochs", type=int, default=None, help="Epochs trained for the generator save")
 parser.add_argument("-ei", "--epoch_interval", type=int, default=100)
 parser.add_argument("-bs", "--batch_size", type=int, default=50)
-parser.add_argument("-d", "--device", type=str, default="cpu")
+parser.add_argument("-d", "--device", type=str, default=None)
 parser.add_argument("-c", "--classifiers", type=str, default=["lr"], nargs="*", choices=CLASSIFIERS)
 parser.add_argument("-f", "--folder", default=False, action="store_true")
 
@@ -42,6 +43,8 @@ torch.set_grad_enabled(False)
 
 if train_opt.dataset != "MNIST":
     raise Exception("Downstream evaluation only implemented for MNIST.")
+if not opt.device is None:
+    train_opt.g_device = opt.device
 
 def compute_fpr_tpr_roc(Y_test, Y_score):
     n_classes = Y_score.shape[1]
@@ -86,17 +89,16 @@ def classify(X_train, Y_train, X_test, classiferName, random_state_value=0):
     return Y_score
 
 
-G, _ = util.init_models(train_opt, init_D=False)
-G.to(opt.device)
+G, _ = init_util.init_models(train_opt, init_D=False)
 G.eval()
 
 z = torch.empty((10000, train_opt.g_latent_dim), device=opt.device).normal_(0.0, 1.0)
 y = torch.empty((10000), device=opt.device).random_(0, 10).long()
 zs = torch.split(z, opt.batch_size)
-ys = torch.split(F.one_hot(y, num_classes=10).float(), opt.batch_size)
+ys = torch.split(y, opt.batch_size)
 y = y.cpu().numpy()
-    
-    
+
+
 # Load MNIST
 
 X_test, Y_test = loadlocal_mnist(
@@ -121,31 +123,31 @@ while True:
     path = opt.path + "saves/G-" + str(epoch)
     if not Path(path).is_file():
         break
-        
+
     # Load model
-    util.load_model(opt.path + "saves/G-" + str(epoch), G)
-        
+    util.load_model(opt.path + "saves/G-" + str(epoch), G, opt.device)
+
     # Generate images
     images = None
     for i in range(len(zs)):
         images = G(zs[i], ys[i]) if images is None else torch.cat([images, G(zs[i], ys[i])])
     images = images.reshape(images.size(0), -1).cpu().numpy()
-    
+
     # Run classifiers
-    
+
     aurocs = []
     for c in opt.classifiers:
         Y_score = classify(images, y, X_test, "lr", random_state_value=30)
         _, _, roc_auc = compute_fpr_tpr_roc(Y_test, Y_score)
         print("{} AUROC ({}):  {}".format(c, epoch, roc_auc["micro"]))
         aurocs.append(roc_auc["micro"])
-        
+
     logger.writerow([epoch] + aurocs)
     log.flush()
-    
+
     if opt.epochs is None:
         epoch += opt.epoch_interval
     else:
         break
-        
+
 log.close()

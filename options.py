@@ -22,16 +22,18 @@ MNIST_DEFAULTS = {
     "n_d_steps": 1,
     "g_label_emb_mode": "concat",
     "d_label_emb_mode": "concat",
+    "aux_loss_type": "cross_entropy",
     "adam_b1": 0.9,
     "adam_b2": 0.999,
     "penalty": [],
     "iter_on_mean_samples": 0,
-    "mean_sample_size": 2000,
-    "mean_sample_noise_std": 0.06,
+    "mean_sample_size": 5000,
+    "mean_sample_noise_std": 0.22,
     "delta": 1e-5,
     "sigma": 5.0,
     "grad_clip_mode": "standard",
     "clipping_param": 4.0,
+    "imm_sens_scaling_mode": "standard",
     "tm_m": 10,
     "tm_max_val": -1,
     "tm_min_val": 1,
@@ -60,16 +62,18 @@ CELEBA_DEFAULTS = {
     "n_d_steps": 5,
     "g_label_emb_mode": "concat",
     "d_label_emb_mode": "concat",
+    "aux_loss_type": "wasserstein",
     "adam_b1": 0.0,
     "adam_b2": 0.9,
     "penalty": ["WGAN-GP"],
     "iter_on_mean_samples": 0,
-    "mean_sample_size": 300,
+    "mean_sample_size": 1000,
     "mean_sample_noise_std": 0.12,
     "delta": 1e-6,
     "sigma": 0.5,
     "imm_sens_scaling_vec": [20, 2, 15, 1.5, 10, 1.5, 10, 1, 30],
     "imm_sens_scaling_mode": "standard",
+    "imm_sens_per_param": True,
     "grad_clip_mode": "standard",
     "clipping_param": 200,
     "clipping_param_per_layer": [1000, 200, 1000, 100, 1000, 100, 1000, 5, 2500], # These model specific defaults should be handled elsewhere
@@ -138,11 +142,12 @@ def parse():
 
     parser.add_argument("--g_latent_dim", type=int, default=None)
     parser.add_argument("--n_d_steps", type=int, default=None)
+    parser.add_argument("--train_d_until_threshold", type=float, default=1e10, help="Will skip G training until D adversarial loss reaches below this threshold.")
     parser.add_argument("-cond", "--conditional", action="store_true", default=False)
     parser.add_argument("--g_label_emb_mode", type=str, choices=["embed", "concat"], default=None)
     parser.add_argument("--d_label_emb_mode", type=str, choices=["embed", "concat"], default=None)
-    parser.add_argument("--conditional_arch", type=str, choices=["CGAN", "ACGAN"], help="Use standard conditional GAN architecture or use auxiliary classifier GAN architecture", default=None)
-    parser.add_argument("--aux_loss_type", type=str, choices=["wasserstein", "cross_entropy"], default="wasserstein")
+    parser.add_argument("--conditional_arch", type=str, choices=["CGAN", "ACGAN", "WCGAN"], help="Use standard conditional GAN architecture, auxiliary classifier GAN architecture, or custom wasserstein conditional GAN", default="ACGAN")
+    parser.add_argument("--aux_loss_type", type=str, choices=["wasserstein", "cross_entropy"], default=None)
     parser.add_argument("--aux_loss_scalar", type=float, default=1)
     parser.add_argument("--aux_penalty", type=str2bool, default=True)
     parser.add_argument("--d_fake_aux_loss", type=str2bool, default=True, help="Experimentally determined that this should probably stay set to True (and this is consistent with ACGAN formulation)")
@@ -173,7 +178,7 @@ def parse():
         help="Gradient clipping mode: standard (clips overall grad norm), adaptive (adaptive-pl but not per-layer) constant per-layer, adaptive per-layer (uses either public partition of data or public mean samples and scales adaptive_stat of the data by adaptive_scalar per layer), moving avg per-layer (updates v = v*beta + grad_norm*target_scale*(1-beta) per layer)")
     parser.add_argument("-c", "--clipping_param", type=float, default=None)
     parser.add_argument("-cpl", "--clipping_param_per_layer", type=float, nargs="*", default=None)
-    parser.add_argument("-as", "--adaptive_scalar", type=float, default=1)
+    parser.add_argument("-as", "--adaptive_scalar", type=float, default=1.5)
     parser.add_argument("--adaptive_stat", choices=["mean", "max"], default="mean")
 
     parser.add_argument("--smooth_sens_t", type=float, default=0.01)
@@ -190,6 +195,7 @@ def parse():
     parser.add_argument("--forward_input_clip_param_pl", type=float, nargs="*", default=None)
     parser.add_argument("-pgcaas", "--pgc_auto_activation_scale", type=float, default=0.2)
     parser.add_argument("-pgcawgs", "--pgc_auto_weight_grad_scale", type=float, default=1e-3)
+    parser.add_argument("--pgc_during_g_train", type=str2bool, default=True)
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
     parser.add_argument("--log_every", type=int, default=None) # samples, prints and logs to csv
@@ -224,17 +230,23 @@ def parse():
         opt.per_sample_grad = opt.dp_mode in ["gc", "tm", "sv"]
 
         opt.is_acgan = opt.conditional and opt.conditional_arch == "ACGAN"
+        opt.use_aux_loss = opt.conditional and opt.conditional_arch in ["ACGAN", "WCGAN"]
+
+        if opt.conditional_arch == "WCGAN" and opt.aux_penalty:
+            print("Setting aux_penalty to false due to using WCGAN.")
+            opt.aux_penalty = False
+        if opt.model == "DeepConvResNet" and opt.use_dp:
+            print("Setting train_d_until_threshold to -1, which is generally recommended for WGAN using DP")
+            opt.train_d_until_threshold = -1
 
         # Check for incompatible configurations
-        if opt.imm_sens_per_param and not opt.imm_sens_scaling_mode is None:
+        if opt.imm_sens_per_param and not (opt.imm_sens_scaling_mode is None or opt.imm_sens_scaling_mode == "standard"):
             raise Exception("Calculating IS per parameter does not require per parameter scaling. Scaling estimates per-parameter calculation.")
-        if opt.imm_sens_per_param:
-            print("Not sure if immediate sensitivity per parameter is working properly.")
         if opt.public_set_size > 0 and opt.num_mean_samples > 0:
             raise Exception("Both public data partition and mean samples were configured, please select only one.")
-        if len(opt.penalty) > 0 and opt.dp_mode == "gc" and opt.penalty_use_public_data and opt.public_set_size < 1 and opt.num_mean_samples < 1:
+        if len(opt.penalty) > 0 and opt.use_dp and opt.penalty_use_public_data and opt.public_set_size < 1 and opt.num_mean_samples < 1:
             raise Exception("In order to enable gradient penalty using public data, please enable mean sampling by setting num_mean_samples or public data by setting public_set_size.")
-        if len(opt.penalty) > 0 and opt.dp_mode == "gc" and opt.public_set_size < 1 and opt.num_mean_samples < 1:
+        if len(opt.penalty) > 0 and opt.use_dp and opt.public_set_size < 1 and opt.num_mean_samples < 1:
             print("Currently configured to calculate penalty per-sample. It is strongly recommended that you use public data or mean samples for gradient penalties when using grad clipping.")
         if (opt.g_label_emb_mode != "concat" or opt.d_label_emb_mode != "concat") and opt.model == "Vanilla":
             raise Exception("Vanilla model with embedded labels not implemented")

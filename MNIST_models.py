@@ -8,7 +8,7 @@ import util
 
 class MNISTVanillaG(Generator):
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, out_ch=1)
         self.criterion = nn.BCEWithLogitsLoss()
 
         self.lin1 = nn.Linear(self.z_dim + self.n_classes, 128)
@@ -35,15 +35,15 @@ class MNISTVanillaD(Discriminator):
 
         self.lin1 = nn.Linear(784 + self.n_classes, 128)
         self.lin2 = nn.Linear(128, 1)
-        self.linOutAux = nn.Linear(128, self.n_classes, bias=True) if self.conditional_arch == "ACGAN" else None
+        if self.n_classes > 1:
+            self.linOutAux = nn.Linear(128, self.n_classes, bias=True) if self.conditional_arch == "ACGAN" else None
 
     def forward(self, x, y=None, aux=True):
         o = x.reshape(x.size(0), -1)
         o = o if y is None else torch.cat([o, F.one_hot(y, num_classes=self.n_classes)], dim=1)
 
         o = F.relu(self.lin1(o))
-        o = self.lin2(o)
-        return o, self.linOutAux(o) if aux and self.conditional_arch == "ACGAN" else None
+        return self.lin2(o), self.linOutAux(o) if aux and self.conditional_arch == "ACGAN" and self.n_classes > 1 else None
 
     def real_loss(self, output, device):
         return self.criterion(output, torch.ones(output.shape, device=device))

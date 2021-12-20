@@ -7,6 +7,7 @@ import torch.optim as optim
 from torch.profiler import profile, record_function, ProfilerActivity
 import torchvision
 from torch import autograd
+from torchinfo import summary
 
 import opacus
 from opacus import PrivacyEngine, ISPrivacyEngine, TMPrivacyEngine, SVPrivacyEngine
@@ -60,7 +61,7 @@ if opt.num_mean_samples > 0:
         mean_size=opt.mean_sample_size,
         default_batch_size=opt.batch_size,
         n_classes = opt.n_classes if opt.conditional else 1,
-        smallest_class_size = (min(dataset.label_true_count, opt.train_set_size - dataset.label_true_count) if opt.dataset == "CelebA" else opt.train_set_size / opt.n_classes) if opt.conditional else None
+        smallest_class_size = (min(dataset.label_true_count, opt.train_set_size - dataset.label_true_count) if opt.dataset == "CelebA" else 5421) if opt.conditional else None
     )
     mean_sample_privacy_cost, _ = mean_sampler.get_privacy_cost(target_delta=opt.delta)
     print("Privacy Cost from Mean Samples:", mean_sample_privacy_cost)
@@ -73,17 +74,17 @@ g_optimizer, d_optimizer = init_optimizers()
 
 start_epoch = 0
 if opt.resume_epochs > 0:
-    util.load_model(opt.resume_path + "saves/G-" + str(opt.resume_epochs), G, g_optimizer)
-    start_epoch = util.load_model(opt.resume_path + "saves/D-" + str(opt.resume_epochs), D, d_optimizer)
+    util.load_model(opt.resume_path + "saves/G-" + str(opt.resume_epochs), G, opt.g_device, g_optimizer)
+    start_epoch = util.load_model(opt.resume_path + "saves/D-" + str(opt.resume_epochs), D, opt.d_device, d_optimizer)
 
 if opt.clip_propogating_grads:
     with torch.no_grad():
         p = (opt.prop_grad_clip_param_pl, opt.forward_input_clip_param_pl) if opt.grad_clip_mode[-3:] == "-pl" else (opt.prop_grad_clip_param, opt.forward_input_clip_param)
         prop_grad_clipper = PropogatingGradClipper(D, *p, opt.pgc_auto_activation_scale, opt.pgc_auto_weight_grad_scale, device=opt.d_device)
 
-        clip_params = [c * opt.batch_size for c in prop_grad_clipper.grad_clip_params] # for mean loss reduction, to be compatible with opacus
+        clip_params = [c * opt.batch_size for c in prop_grad_clipper.grad_l2_bounds] # for mean loss reduction, to be compatible with opacus
 
-        opt.clipping_param_per_layer =  clip_params
+        opt.clipping_param_per_layer = clip_params
         opt.clipping_param = np.linalg.norm(clip_params, ord=2)
 
 privacy_engine = None
@@ -91,7 +92,7 @@ def setup_privacy_engine():
     privacy_params = {
         "batch_size": opt.batch_size,
         "sample_size": opt.train_set_size,
-        "alphas": [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64)), # Recommended by Opacus
+        "alphas": [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 400)), # Recommended by Opacus
         "noise_multiplier": opt.sigma,
     }
     if opt.dp_mode == "is":
@@ -176,7 +177,7 @@ def eval_G_D(z, y=None, g_kwarg={}, d_kwarg={}):
         ret_img.append(G_last)
         ret_out.append(D(G_last, None if y is None else y_split[-1].to(opt.d_device), **d_kwarg))
 
-        return torch.cat(o for o,_ in ret_out), torch.cat(a for _,a in ret_out) if opt.is_acgan else None, torch.cat(ret_img)
+        return torch.cat(o for o,_ in ret_out), torch.cat(a for _,a in ret_out) if opt.use_aux_loss else None, torch.cat(ret_img)
 
 def get_penalty_data(data_in, labels_in):
     data = data_in
@@ -254,22 +255,19 @@ if opt.conditional:
 else:
     fixed_y = gen_y(opt.sample_num)
 
-gc_log_str = "\n=== Grad Norms ===\nMean Per Layer: {}\nStd Per Layer: {}\nMax Per Layer: {}\nClipping Params: {}\nGrads Clipped: {}"
-gc_log_stats = ["D Layer Grad Norm Means", "D Layer Grad Norm Stds", "D Layer Grad Norm Maxes", "Clipping Params", "Grads Clipped"]
-is_log_str = "\nIS - Mean: {:4.8f} - Min: {:4.8f} - Max: {:4.8f}"
-is_log_stats = ["IS Mean", "IS Min", "IS Max"]
 logger = Logger(
-    "G " + ("Adv " if opt.is_acgan else "") + "Loss: {:4.4f}" + (", G Aux: {:4.4f} / {:3.1f}%\n" if opt.is_acgan else " | ") +
+    "G " + ("Adv " if opt.use_aux_loss else "") + "Loss: {:4.4f}" + (", G Aux: {:4.4f} / {:3.1f}%\n" if opt.use_aux_loss else " | ") +
         "D Adv Loss: {:4.4f} (Real: {:4.4f} / {:3.1f}%, Fake: {:4.4f} / {:3.1f}%" +
-        (", Real Aux: {:4.4f} / {:3.1f}%" if opt.is_acgan else "") +
+        (", Real Aux: {:4.4f} / {:3.1f}%" if opt.use_aux_loss else "") +
         (", Penalty: {:4.4f}" if len(opt.penalty) > 0 else "") + ")" +
-        (gc_log_str if opt.dp_mode == "gc" else "") + (is_log_str if opt.dp_mode == "is" and opt.imm_sens_scaling_mode[-3:] != "-pl" else ""),
-    ["G Adv Loss"] + (["G Aux Loss", "G Aux Acc"] if opt.is_acgan else []) +
+        ("\n=== Grad Norms ===\nMean Per Layer: {}\nStd Per Layer: {}\nMax Per Layer: {}\nClipping Params: {}\nGrads Clipped: {}" if opt.dp_mode == "gc" else "") +
+        ("\nIS - Mean: {} - Min: {} - Max: {}" if opt.dp_mode == "is" else ""),
+    ["G Adv Loss"] + (["G Aux Loss", "G Aux Acc"] if opt.use_aux_loss else []) +
         ["D Adv Loss", "D Real Loss", "D Real Acc", "D Fake Loss", "D Fake Acc"] +
-        (["D Real Aux Loss", "D Real Aux Acc"] if opt.is_acgan else []) +
+        (["D Real Aux Loss", "D Real Aux Acc"] if opt.use_aux_loss else []) +
         (["D Penalty"] if len(opt.penalty) > 0 else []) +
-        (gc_log_stats if opt.dp_mode == "gc" else []) +
-        (is_log_stats if opt.dp_mode == "is" and opt.imm_sens_scaling_mode[-3:] != "-pl" else []),
+        (["D Layer Grad Norm Means", "D Layer Grad Norm Stds", "D Layer Grad Norm Maxes", "Clipping Params", "Grads Clipped"] if opt.dp_mode == "gc" else []) +
+        (["IS Mean", "IS Min", "IS Max"] if opt.dp_mode == "is" else []),
     (opt.log_every_epochs * opt.train_set_size if opt.log_every_epochs > 0 else opt.log_every) // opt.batch_size,
     opt.output_dir + "log.csv"
 )
@@ -283,6 +281,8 @@ if opt.use_dp:
         privacy_log.flush()
 
 batches_per_epoch = opt.train_set_size / opt.batch_size
+
+d_adv_loss = 0
 
 def log(epoch, epoch_progress, print_dp=False):
     logger.log(epoch, epoch_progress)
@@ -325,8 +325,12 @@ def update_grad_logging():
 
 def update_is_logging():
     logger.stats["IS Mean"] += privacy_engine.batch_sensitivity
-    logger.stats["IS Min"] = min(99999 if logger.stats["IS Min"] < 1e-8 else logger.stats["IS Min"], privacy_engine.batch_sensitivity * logger.interval) # Scale by logger.interval so when logger divides it it is shown as the original value
-    logger.stats["IS Max"] = max(logger.stats["IS Max"], privacy_engine.batch_sensitivity * logger.interval)
+    if opt.imm_sens_per_param:
+        logger.stats["IS Min"] = privacy_engine.batch_sensitivity * logger.interval if isinstance(logger.stats["IS Min"], float) else np.minimum(logger.stats["IS Min"], privacy_engine.batch_sensitivity * logger.interval) # Scale by logger.interval so when logger divides it it is shown as the original value
+        logger.stats["IS Max"] = np.maximum(logger.stats["IS Max"], privacy_engine.batch_sensitivity * logger.interval)
+    else:
+        logger.stats["IS Min"] = min(99999 if logger.stats["IS Min"] < 1e-8 else logger.stats["IS Min"], privacy_engine.batch_sensitivity * logger.interval) # Scale by logger.interval so when logger divides it it is shown as the original value
+        logger.stats["IS Max"] = max(logger.stats["IS Max"], privacy_engine.batch_sensitivity * logger.interval)
 
 
 # # # # # # # # # # # # #
@@ -337,14 +341,14 @@ def calc_d_fake_loss(img, labels, z, y):
     d_fake, d_fake_aux, fake_img = eval_G_D(z, y, d_kwarg={"aux": opt.d_fake_aux_loss})
     fake_img = fake_img.detach()
     d_fake_loss = D.fake_loss(d_fake, opt.d_device)
-    d_fake_aux_loss = D.aux_loss(d_fake_aux, y.to(opt.d_device), opt.d_device) if opt.is_acgan and opt.d_fake_aux_loss else 0
+    d_fake_aux_loss = D.aux_loss(d_fake_aux, y.to(opt.d_device), opt.d_device, fake=True) if opt.use_aux_loss and opt.d_fake_aux_loss else 0
 
     return d_fake, d_fake_aux, d_fake_loss, d_fake_aux_loss, fake_img
 
 def calc_d_real_loss(img, labels):
     d_real, d_real_aux = D(img, labels)
     d_real_loss = D.real_loss(d_real, opt.d_device)
-    d_real_aux_loss = D.aux_loss(d_real_aux, labels, opt.d_device) if opt.is_acgan else 0
+    d_real_aux_loss = D.aux_loss(d_real_aux, labels, opt.d_device, fake=False) if opt.use_aux_loss else 0
 
     return d_real, d_real_aux, d_real_loss, d_real_aux_loss
 
@@ -358,13 +362,15 @@ def train_D(img, labels, z, y, use_dp=False):
     use_tm = opt.dp_mode == "tm" and use_dp
     use_sv = opt.dp_mode == "sv" and use_dp
 
+    if opt.clip_propogating_grads and use_dp:
+        prop_grad_clipper.enable_hooks()
     if opt.per_sample_grad and use_dp:
         privacy_engine.enable_hooks()
     if use_imm_sens:
         img.requires_grad = True
         if opt.imm_sens_scaling_mode == "adaptive-pl":
             update_adaptive_is_scaling()
-    if use_grad_clip:
+    if use_grad_clip and use_dp:
         if opt.grad_clip_mode[:8] == "adaptive":
             update_adaptive_clipping_params()
 
@@ -446,8 +452,7 @@ def train_D(img, labels, z, y, use_dp=False):
                 privacy_engine.backward(d_loss, img)
                 if opt.imm_sens_scaling_mode == "moving-avg-pl":
                     update_sens_moving_avg()
-                elif opt.imm_sens_scaling_mode[:-3] != "-pl":
-                    update_is_logging()
+                update_is_logging()
             else:
                 d_loss.backward()
 
@@ -468,13 +473,14 @@ def train_D(img, labels, z, y, use_dp=False):
         else:
             d_loss.backward()
 
-    if opt.clip_propogating_grads and use_dp:
+    if opt.pgc_during_g_train and opt.clip_propogating_grads and use_dp:
         prop_grad_clipper.enable_hooks()
 
     d_optimizer.step()
     util.unfreeze(G)
 
     # Update discriminator logging
+    logger.d_adv_loss += d_real_loss.item() + d_fake_loss.item()
     logger.stats["D Adv Loss"] += d_real_loss.item() + d_fake_loss.item()
     logger.stats["D Real Loss"] += d_real_loss.item()
     logger.stats["D Fake Loss"] += d_fake_loss.item()
@@ -484,7 +490,7 @@ def train_D(img, labels, z, y, use_dp=False):
     if len(opt.penalty) > 0:
         logger.stats["D Penalty"] += penalty.item()
 
-    if opt.is_acgan:
+    if opt.use_aux_loss:
         logger.stats["D Real Aux Loss"] += d_real_aux_loss.item()
         logger.stats["D Real Aux Acc"] += 100*np.mean(np.argmax(d_real_aux.detach().cpu().numpy(), axis=1) == labels.detach().cpu().numpy())
 
@@ -493,34 +499,43 @@ def train_G(z, y):
 
     d_fake, d_fake_aux, _ = eval_G_D(z, y)
     g_adv_loss = G.loss(d_fake, opt.d_device)
-    g_aux_loss = D.aux_loss(d_fake_aux, y.to(opt.d_device), opt.d_device) if opt.is_acgan else 0
+    g_aux_loss = D.aux_loss(d_fake_aux, y.to(opt.d_device), opt.d_device) if opt.is_acgan else 0  # this is intentionally using opt.is_acgan instead of opt.use_aux_loss
     g_loss = g_adv_loss + g_aux_loss
 
     g_loss.backward()
     g_optimizer.step()
 
     # Update generator logging
-    logger.stats["G Adv Loss"] += g_adv_loss.item() * opt.n_d_steps  # Multiply by n_d_steps for consistency with logging
-    if opt.is_acgan:
-        logger.stats["G Aux Loss"] += g_aux_loss.item() * opt.n_d_steps  # Multiply by n_d_steps for consistency with logging
-        logger.stats["G Aux Acc"] += 100*np.mean(np.argmax(d_fake_aux.detach().cpu().numpy(), axis=1) == y.detach().cpu().numpy()) * opt.n_d_steps
+    logger.stats["G Adv Loss"] += g_adv_loss.item()
+    if opt.is_acgan:  # this is intentionally using opt.is_acgan instead of opt.use_aux_loss
+        logger.stats["G Aux Loss"] += g_aux_loss.item()
+        logger.stats["G Aux Acc"] += 100*np.mean(np.argmax(d_fake_aux.detach().cpu().numpy(), axis=1) == y.detach().cpu().numpy())
 
+setattr(logger, "log_g_iter", 0)
+setattr(logger, "d_adv_loss", 0)
 def train(epoch, batch_i, real_images_batch, real_labels_batch, use_dp=False):
     real_images_batch = real_images_batch.to(opt.d_device)
     real_labels_batch = real_labels_batch.to(opt.d_device) if opt.conditional else None
     batch_size = real_images_batch.size(0)
 
     # Train discriminator
-    train_D(real_images_batch, real_labels_batch, gen_z(batch_size), real_labels_batch, use_dp=use_dp)
+    skip_g = train_D(real_images_batch, real_labels_batch, gen_z(batch_size), real_labels_batch, use_dp=use_dp)
 
     # Train generator
     if batch_i % opt.n_d_steps == 0: # only train generator every n_d_steps iterations
-        train_G(gen_z(batch_size), gen_y(batch_size))
+        if logger.d_adv_loss / opt.n_d_steps < opt.train_d_until_threshold:
+            logger.log_g_iter += 1
+            train_G(gen_z(batch_size), gen_y(batch_size))
+
+        logger.d_adv_loss = 0
 
     # Logging and profiling
     if opt.profile_training:
         profiler.step()
     if ((batch_i+1) * opt.batch_size) % opt.log_every == 0:
+        for stat in [k for k in logger.stats.keys() if k.startswith("G ")]:
+            logger.stats[stat] *= 0 if logger.log_g_iter == 0 else logger.interval / logger.log_g_iter
+        logger.log_g_iter = 0
         log(epoch, 100*batch_i / batches_per_epoch, print_dp=use_dp)
     if ((batch_i+1) * opt.batch_size) % opt.sample_every == 0:
         sample(epoch, batch_i)

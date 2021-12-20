@@ -120,8 +120,10 @@ class DCResNetDiscriminator(Discriminator):
 
         size = channels[-1]*last_filter_size**2
 
-        self.linOut = nn.Linear(size, 1, bias=False)
-        self.linOutAux = nn.Linear(size, self.n_classes, bias=True) if self.conditional_arch == "ACGAN" else None
+        if self.n_classes < 2 or self.conditional_arch != "WCGAN":
+            self.linOut = nn.Linear(size, 1, bias=False)
+        if self.n_classes > 1 and self.conditional_arch in ["ACGAN", "WCGAN"]:
+            self.linOutAux = nn.Linear(size, self.n_classes, bias=True)
 
     def forward(self, x, y=None, aux=True):
         # Concat like https://cameronfabbri.github.io/papers/conditionalWGAN.pdf
@@ -135,7 +137,14 @@ class DCResNetDiscriminator(Discriminator):
             if self.emb_mode == "embed":
                 o = torch.mul(self.emb(y), o)
 
-        return self.linOut(o), self.linOutAux(o) if aux and self.conditional_arch == "ACGAN" else None
+        out_aux = self.linOutAux(o) if aux and hasattr(self, "linOutAux") else None
+        if not out_aux is None and self.conditional_arch == "WCGAN":
+            out = (out_aux * F.one_hot(y, self.n_classes)).sum(dim=1)
+            #print("Main:",F.one_hot(y, self.n_classes).float().mean(dim=0)/2)
+        else:
+            out = self.linOut(o)
+
+        return out, out_aux
 
     def real_loss(self, output, device):
         return -torch.mean(output)

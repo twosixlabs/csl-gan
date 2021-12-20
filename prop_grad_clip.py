@@ -3,6 +3,7 @@ from torch import nn
 from typing import List
 from torchinfo import summary
 import numpy as np
+import os, sys
 
 def prod(tuple):
     prod = 1
@@ -65,32 +66,31 @@ class PGCWrapper(nn.Module):
             self.pgc.input_clip_params.append(self.input_clip_param)
 
             if isinstance(self.module, nn.Linear):
-                self.pgc.grad_clip_params.append(l2_size(p[0].numel(), self.pgc.auto_weight_grad_scale)) # weight
-                self.back_clip_param = self.pgc.grad_clip_params[self.pgc.parameter_ind] / self.input_clip_param
+                self.pgc.grad_l2_bounds.append(l2_size(p[0].numel(), self.pgc.auto_weight_grad_scale)) # weight
+                self.back_clip_param = self.pgc.grad_l2_bounds[self.pgc.parameter_ind] / self.input_clip_param
                 self.pgc.back_clip_params.append(self.back_clip_param)
                 if np > 1:
-                    self.pgc.grad_clip_params.append(self.back_clip_param) # bias
+                    self.pgc.grad_l2_bounds.append(self.back_clip_param) # bias
             elif isinstance(self.module, nn.Conv2d):
                 # for now just do the same for conv weight
-                self.pgc.grad_clip_params.append(l2_size(p[0].numel(), self.pgc.auto_weight_grad_scale)) # weight
-                self.back_clip_param = self.pgc.grad_clip_params[self.pgc.parameter_ind] / self.input_clip_param
+                self.pgc.grad_l2_bounds.append(l2_size(p[0].numel(), self.pgc.auto_weight_grad_scale)) # weight
+                self.back_clip_param = l2_to_l1(self.pgc.grad_l2_bounds[self.pgc.parameter_ind], prod(self.module.out_shape[1:])) / self.input_clip_param
                 self.pgc.back_clip_params.append(self.back_clip_param)
                 if np > 1:
-                    self.pgc.grad_clip_params.append(self.back_clip_param * prod(self.module.out_shape[1:])) # bias (guess)
+                    self.pgc.grad_l2_bounds.append(self.back_clip_param * prod(self.module.out_shape[1:])) # bias (guess)
         else:
             self.input_clip_param = self.pgc.input_clip_params[self.pgc.layer_ind]
             self.back_clip_param = self.pgc.back_clip_params[self.pgc.layer_ind]
 
             # Calculate max gradient l2 norm for each parameter and save
             if isinstance(self.module, nn.Linear):
-                pgc.grad_clip_params.append(self.input_clip_param * self.back_clip_param) # weight
+                pgc.grad_l2_bounds.append(self.input_clip_param * self.back_clip_param) # weight
                 if np > 1:
-                    pgc.grad_clip_params.append(self.back_clip_param) # bias
+                    pgc.grad_l2_bounds.append(self.back_clip_param) # bias
             elif isinstance(self.module, nn.Conv2d):
-                # This is not correct, just copied from linear
-                self.pgc.grad_clip_params.append(self.input_clip_param * self.back_clip_param) # weight
+                self.pgc.grad_l2_bounds.append(self.input_clip_param * l2_to_l1(self.back_clip_param, prod(self.module.out_shape[1:]))) # weight
                 if np > 1:
-                    self.pgc.grad_clip_params.append(self.back_clip_param * prod(self.module.out_shape[1:])) # bias (guess)
+                    self.pgc.grad_l2_bounds.append(self.back_clip_param * prod(self.module.out_shape[1:])) # bias
 
         self.pgc.layer_ind += 1
         self.pgc.parameter_ind += np
@@ -103,7 +103,7 @@ class PGCWrapper(nn.Module):
         return self.dummy(self.module(l2_clip(x, self.input_clip_param)))
 
 class PropogatingGradClipper:
-    def __init__(self, model, back_clip_params=None, input_clip_params=None, auto_activation_scale=0.1, auto_weight_grad_scale=1e-5, device="cpu"):
+    def __init__(self, model, back_clip_params=None, input_clip_params=None, auto_activation_scale=0.5, auto_weight_grad_scale=1e-4, device="cpu"):
         # If back_clip_params or input_clip_params is None, will automatically determine them based on layer size and auto params
         self.hooks_enabled = True
 
@@ -117,16 +117,18 @@ class PropogatingGradClipper:
         self.auto_activation_scale = auto_activation_scale
         self.auto_weight_grad_scale = auto_weight_grad_scale
 
-        self.grad_clip_params = []
+        self.grad_l2_bounds = []
 
+        sys.stdout = open(os.devnull, 'w')
         s = summary(model, input_size=(1,1,28,28))
+        sys.stdout = sys.__stdout__
         for layer_info in s.summary_list:
             layer_info.module.in_shape = layer_info.input_size[1:]
             layer_info.module.out_shape = layer_info.output_size[1:]
 
         self.convert(model, auto_params=(back_clip_params is None or input_clip_params is None))
 
-        print("Clipping Params:",self.grad_clip_params)
+        print("L2 Bounds:",self.grad_l2_bounds)
         print("Backprop Clipping Params:",self.back_clip_params)
         print("Forward Clipping Params:",self.input_clip_params)
 

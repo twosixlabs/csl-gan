@@ -6,7 +6,7 @@ from opacus.privacy_analysis import compute_rdp, get_privacy_spent
 
 import util
 
-ALPHAS = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 64))
+ALPHAS = [1 + x / 10.0 for x in range(1, 100)] + list(range(12, 400))
 
 
 class MeanSampler():
@@ -84,7 +84,7 @@ class MeanSampler():
         return r, (requested_labels if self.n_classes > 1 else None)
 
     def get_privacy_cost(self, target_delta=1e-6, alphas=ALPHAS):
-        pixel_sensitivity = self.n_classes/self.mean_size
+        pixel_sensitivity = 1/self.mean_size/2
         l2_sensitivity = np.sqrt(self.ch*self.res**2*pixel_sensitivity**2)
 
         # Opacus accounting

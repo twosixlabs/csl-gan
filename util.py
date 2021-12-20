@@ -33,8 +33,8 @@ def zero_grad(model):
     for p in model.parameters():
         p.grad = None
 
-def load_model(path, model, optimizer=None):
-    checkpoint = torch.load(path)
+def load_model(path, model, device, optimizer=None):
+    checkpoint = torch.load(path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     if not optimizer is None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -48,3 +48,13 @@ def max_batch_size_for_sample_rate(sample_rate, train_set_size=180000, acceptabl
     sigma = np.sqrt(train_set_size*sample_rate*(1-sample_rate))
     dist = torch.distributions.normal.Normal(mu, sigma)
     return int(dist.icdf(torch.tensor(1 - acceptable_risk_per_batch)).item()) + 1
+
+def convert_modules(self, module_type, replacement):
+    for name, m in module.named_modules():
+        if isinstance(m, module_type) and len(list(m.children())) < 1:
+            parent = module
+            names = name.split(".")
+            for name in names[:-1]:
+                parent = parent._modules[name]
+
+            parent._modules[names[-1]] = replacement(self, m)
