@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import torch
 from torch import nn
+import torchviz
 
 import options
 import util
@@ -25,6 +26,7 @@ train_opt = options.load_opt(opt.path + "opt.txt")
 if not opt.batch_size is None:
     train_opt.batch_size = opt.batch_size
 train_opt.d_device = opt.device
+
 
 # _, D = init_util.init_models(train_opt, init_G=False)
 # D.to(opt.device)
@@ -62,13 +64,25 @@ def get_imm_sens(loss, inp):
     # (4) L2 norm of (3) - "immediate sensitivity"
     s = [torch.norm(v, p=2) for v in sensitivity_vec]
 
-    print(torch.autograd.grad(s[0], inp, retain_graph=True, create_graph=True, allow_unused=True))
+    # g = torchviz.make_dot(s[0], params=dict(D.named_parameters()))
+    # g.render(filename="is_test_graph")
+    # loss.backward(retain_graph=True)
 
-    grad_imm_sens_wrt_input = np.array([torch.autograd.grad(si, inp[i], retain_graph=True, create_graph=True, allow_unused=True)[0] for i, si in enumerate(s)]).mean()
+    print(torch.autograd.grad(s[0], inp[0], retain_graph=True, create_graph=True, allow_unused=True)[0])
+
+    temp = torch.autograd.grad(s[0], inp, retain_graph=True, create_graph=True, allow_unused=True)[0]
+    print(temp)
+    temp = [None if v is None else v.mean().item() for v in temp]
+    print(temp)
+
+    grad_imm_sens_wrt_input = [torch.autograd.grad(si, inp[i], retain_graph=True, create_graph=True, allow_unused=True)[0] for i, si in enumerate(s)]
+    grad_imm_sens_wrt_input = [None if v is None else v.mean().item() for v in grad_imm_sens_wrt_input]
+    # print(grad_imm_sens_wrt_input)
+    raise Exception()
 
     grad_imm_sens_wrt_weight = [torch.autograd.grad(si, next(iter(D.parameters())).norm(2), retain_graph=True, create_graph=True, allow_unused=True) for si in s]
     grad_imm_sens_wrt_weight = np.array([np.array([0 if g is None else g.norm(2).cpu().item() for g in grads]).sum() for grads in grad_imm_sens_wrt_weight]).sum()
-    print(grad_imm_sens_wrt_weight)
+    #print(grad_imm_sens_wrt_weight)
 
     return grad_imm_sens_wrt_input
 
@@ -87,39 +101,40 @@ in_labels = gen_y(opt.batch_size).to(opt.device)
 negate_mask = torch.ones(opt.batch_size, device=opt.device)
 negate_mask[:opt.batch_size//2+1] *= -1
 
-in_white = torch.ones(shape, device=opt.device).clamp(min=1e-5, max=1-1e-5)
-in_white.requires_grad_()
-out_white, _ = D(in_white, in_labels)
-loss = (out_white * negate_mask).mean()
-loss.backward(retain_graph=True)
-print("White sens:", get_imm_sens(loss, in_white))
-util.zero_grad(D)
-
-in_black = (torch.zeros(shape, device=opt.device) - (1 if train_opt.dataset == "CelebA" else 0)).clamp(min=1e-5, max=1-1e-5)
-in_black.requires_grad_()
-out_black, _ = D(in_black, in_labels)
-loss = (out_black * negate_mask).mean()
-loss.backward(retain_graph=True)
-print("Black sens:", get_imm_sens(loss, in_black))
-util.zero_grad(D)
-
-sensitivities = []
-for mean in np.arange(0, 1, 0.1):
-    for std in [1e-3, 0.01, 0.1, 0.2, 0.5]:
-        inp = torch.empty(shape, device=opt.device).normal_(mean, std).clamp(min=1e-5, max=1-1e-5)
-        inp.requires_grad_()
-        out, _ = D(inp, in_labels)
-        loss = (out * negate_mask).mean()
-        imm_sens = get_imm_sens(loss, inp)
-        sensitivities.append(imm_sens)
-
-sensitivities = np.array(sensitivities)
-print("\nNoise stats:")
-print("Mean:", sensitivities.mean())
-print("Std:", sensitivities.std())
-print("Min:", sensitivities.min())
-print("Max:", sensitivities.max())
-print("Max-Min:", sensitivities.max() - sensitivities.min())
+# in_white = torch.ones(shape, device=opt.device).clamp(min=1e-5, max=1-1e-5)
+# util.zero_grad(D)
+# in_white.requires_grad_()
+# out_white, _ = D(in_white, in_labels)
+# loss = (out_white * negate_mask).mean()
+#
+# print("White sens:", get_imm_sens(loss, in_white))
+# util.zero_grad(D)
+#
+# in_black = (torch.zeros(shape, device=opt.device) - (1 if train_opt.dataset == "CelebA" else 0)).clamp(min=1e-5, max=1-1e-5)
+# in_black.requires_grad_()
+# out_black, _ = D(in_black, in_labels)
+# loss = (out_black * negate_mask).mean()
+# loss.backward(retain_graph=True)
+# print("Black sens:", get_imm_sens(loss, in_black))
+# util.zero_grad(D)
+#
+# sensitivities = []
+# for mean in np.arange(0, 1, 0.1):
+#     for std in [1e-3, 0.01, 0.1, 0.2, 0.5]:
+#         inp = torch.empty(shape, device=opt.device).normal_(mean, std).clamp(min=1e-5, max=1-1e-5)
+#         inp.requires_grad_()
+#         out, _ = D(inp, in_labels)
+#         loss = (out * negate_mask).mean()
+#         imm_sens = get_imm_sens(loss, inp)
+#         sensitivities.append(imm_sens)
+#
+# sensitivities = np.array(sensitivities)
+# print("\nNoise stats:")
+# print("Mean:", sensitivities.mean())
+# print("Std:", sensitivities.std())
+# print("Min:", sensitivities.min())
+# print("Max:", sensitivities.max())
+# print("Max-Min:", sensitivities.max() - sensitivities.min())
 
 
 sensitivities = []
