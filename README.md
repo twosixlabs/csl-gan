@@ -1,5 +1,9 @@
 # Cooperative Secure Learning through Generative Adversarial Networks using Differential Privacy
 
+## Introduction
+
+This repository allows for training GANs on the MNIST and CelebA datasets with gradient clipping and immediate sensitivity using a fork of the Opacus library (see requirements.txt).
+
 ## Notes for Use
 
 Default options are provided for each dataset (CelebA with deep convolutional ResNet GAN, MNIST with vanilla GAN) and can be found at the top of options.py
@@ -9,14 +13,9 @@ Only the gradient clipping (dp_mode=gc) and immediate sensitivity (dp_mode=is) p
 
 ## Example Invocations
 
-MNIST GAN on GPU0 with 600 batch size
+MNIST conditional GAN on GPU0 with 600 batch size
 ```bash
-python train.py MNIST -gd cuda:0 -dd cuda:0 -bs 600
-```
-
-MNIST GAN with adaptive gradient clipping using adaptive clipping with mean samples
-```bash
-python train.py MNIST -gd cuda:0 -dd cuda:0 -bs 600 -ugc -gcm adaptive -nms 20
+python train.py MNIST -gd cuda:0 -dd cuda:0 -bs 600 --conditional
 ```
 
 CelebA GAN on GPU0 and GPU1 with 128 batch size
@@ -24,15 +23,26 @@ CelebA GAN on GPU0 and GPU1 with 128 batch size
 python train.py CelebA -gd cuda:0 -dd cuda:1 -bs 128
 ```
 
-CelebA GAN with gradient clipping using mean samples for adaptive clipping and for gradient penalty
+MNIST conditional GAN with gradient clipping for differential privacy with a noise scale of 10
 ```bash
-python train.py CelebA -gd cuda:0 -dd cuda:0 -bs 64 -nms 32 -ugc -gcm adaptive-pl
+python train.py MNIST -gd cuda:0 -dd cuda:0 -bs 600 --conditional --dp_mode gc --sigma 10
 ```
 
-CelebA GAN with gradient clipping using a public set of size 4000 for per-layer adaptive clipping, gradient penalty, and a warm start with 1000 iterations
+MNIST conditional GAN with immediate sensitivity for approximate differential privacy with a noise scale of 10
 ```bash
-python train.py CelebA -gd cuda:0 -dd cuda:0 -bs 64 -ugc -gcm adaptive-pl -pss 4000 -wi 1000
+python train.py MNIST -gd cuda:0 -dd cuda:0 -bs 600 --conditional --dp_mode is --sigma 10
 ```
+
+CelebA GAN with gradient clipping using mean samples for adaptive clipping and for gradient penalty
+```bash
+python train.py CelebA -gd cuda:0 -dd cuda:0 -bs 128 -nms 32 --dp_mode gc -gcm adaptive-pl
+```
+
+CelebA GAN with per-parameter immediate sensitivity using mean samples for gradient penalty
+```bash
+python train.py CelebA -gd cuda:0 -dd cuda:0 -bs 128 -nms 32 --dp_mode is -ispp True
+```
+
 
 ## Scripts
 
