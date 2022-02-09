@@ -27,11 +27,10 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument("path", type=str, help="Path to the output folder containing the generator save")
 parser.add_argument("-e", "--epochs", type=int, default=None, help="Epochs trained for the generator save")
-parser.add_argument("-ei", "--epoch_interval", type=int, default=100)
+parser.add_argument("-ei", "--epoch_interval", type=int, default=100, help="Alternative to --epochs, runs on all saves with an interval of epoch_interval")
 parser.add_argument("-bs", "--batch_size", type=int, default=50)
 parser.add_argument("-d", "--device", type=str, default=None)
 parser.add_argument("-c", "--classifiers", type=str, default=["lr"], nargs="*", choices=CLASSIFIERS)
-parser.add_argument("-f", "--folder", default=False, action="store_true")
 
 opt = parser.parse_args()
 

@@ -9,16 +9,20 @@ import torchvision
 from torch import autograd
 from torchinfo import summary
 
+import sys
 import opacus
 from opacus import PrivacyEngine, ISPrivacyEngine, TMPrivacyEngine, SVPrivacyEngine
 
 from logger import *
 from mean_sampler import MeanSampler
 from gradient_penalty import *
-from prop_grad_clip import *
+from backprop_clip import *
 import util
 import init_util
 import options
+
+
+from typing import *
 
 
 torch.backends.cudnn.benchmark = True
@@ -39,7 +43,6 @@ if opt.resume_path is None:
         if os.path.isfile(file):
             shutil.copy2(file, opt.output_dir+"code/")
 
-
 # # # # # # # # # # # # # # # #
 #  Create dataset and models  #
 # # # # # # # # # # # # # # # #
@@ -55,13 +58,14 @@ if opt.num_mean_samples > 0:
     opt.batch_size = batch_size_backup
     mean_sampler = MeanSampler(
         dataloader=mean_dataloader,
+        dataset_size=opt.train_set_size, #######
         save_path=opt.output_dir + "mean_samples/",
         noise_std=opt.mean_sample_noise_std,
         num_samples=opt.num_mean_samples,
         mean_size=opt.mean_sample_size,
         default_batch_size=opt.batch_size,
         n_classes = opt.n_classes if opt.conditional else 1,
-        smallest_class_size = (min(dataset.label_true_count, opt.train_set_size - dataset.label_true_count) if opt.dataset == "CelebA" else 5421) if opt.conditional else None
+        smallest_class_size = (min(dataset.label_true_count, opt.train_set_size - dataset.label_true_count) if opt.dataset == "CelebA" else opt.train_set_size / opt.n_classes) if opt.conditional else None
     )
     mean_sample_privacy_cost, _ = mean_sampler.get_privacy_cost(target_delta=opt.delta)
     print("Privacy Cost from Mean Samples:", mean_sample_privacy_cost)
@@ -69,7 +73,7 @@ else:
     mean_sample_privacy_cost = 0
 
 def init_optimizers():
-    return optim.Adam(G.parameters(), lr=opt.g_lr, betas=(opt.adam_b1, opt.adam_b2)), optim.Adam(D.parameters(), lr=opt.d_lr, betas=(opt.adam_b1, opt.adam_b2))
+    return optim.Adam(G.parameters(), lr=opt.g_lr, betas=(opt.adam_b1, opt.adam_b2)), optim.Adam(D.parameters(), lr=opt.d_lr, betas=(opt.adam_b1, opt.adam_b2), weight_decay=opt.weight_decay)
 g_optimizer, d_optimizer = init_optimizers()
 
 start_epoch = 0
@@ -77,10 +81,10 @@ if opt.resume_epochs > 0:
     util.load_model(opt.resume_path + "saves/G-" + str(opt.resume_epochs), G, opt.g_device, g_optimizer)
     start_epoch = util.load_model(opt.resume_path + "saves/D-" + str(opt.resume_epochs), D, opt.d_device, d_optimizer)
 
-if opt.clip_propogating_grads:
+if opt.backprop_clip:
     with torch.no_grad():
-        p = (opt.prop_grad_clip_param_pl, opt.forward_input_clip_param_pl) if opt.grad_clip_mode[-3:] == "-pl" else (opt.prop_grad_clip_param, opt.forward_input_clip_param)
-        prop_grad_clipper = PropogatingGradClipper(D, *p, opt.pgc_auto_activation_scale, opt.pgc_auto_weight_grad_scale, device=opt.d_device)
+        p = (opt.bpc_back_clip_param_pl, opt.bpc_forward_clip_param_pl) if opt.grad_clip_mode[-3:] == "-pl" else (opt.bpc_back_clip_param, opt.bpc_forward_clip_param)
+        prop_grad_clipper = BackpropClipper(D, *p, opt.bpc_auto_activation_scale, opt.bpc_auto_weight_grad_scale, device=opt.d_device)
 
         clip_params = [c * opt.batch_size for c in prop_grad_clipper.grad_l2_bounds] # for mean loss reduction, to be compatible with opacus
 
@@ -203,8 +207,9 @@ def update_adaptive_clipping_params():
 
     if opt.public_set_size > 0:
         img, labels = next(iter(public_dataloader)) # could update to use sampled batch size for more accuracy and less efficiency
-        img = torch.tensor(img)
-        labels = torch.tensor(labels) if opt.conditional else None
+        img = img.clone() #torch.tensor(img)
+        #labels = torch.tensor(labels) if opt.conditional else None
+        labels = labels.clone() if opt.conditional else None
     else:
         img, labels = mean_sampler.sample(opt.batch_size)
 
@@ -362,7 +367,7 @@ def train_D(img, labels, z, y, use_dp=False):
     use_tm = opt.dp_mode == "tm" and use_dp
     use_sv = opt.dp_mode == "sv" and use_dp
 
-    if opt.clip_propogating_grads and use_dp:
+    if opt.backprop_clip and use_dp:
         prop_grad_clipper.enable_hooks()
     if opt.per_sample_grad and use_dp:
         privacy_engine.enable_hooks()
@@ -382,7 +387,7 @@ def train_D(img, labels, z, y, use_dp=False):
         d_loss.backward()
         next(iter(D.parameters())).grad_sample.size(1)
         privacy_engine.disable_hooks()
-    if opt.clip_propogating_grads and use_dp:
+    if opt.backprop_clip and use_dp:
         if not opt.per_sample_grad:
             d_loss.backward()
         prop_grad_clipper.disable_hooks()
@@ -473,7 +478,7 @@ def train_D(img, labels, z, y, use_dp=False):
         else:
             d_loss.backward()
 
-    if opt.pgc_during_g_train and opt.clip_propogating_grads and use_dp:
+    if opt.bpc_during_g_train and opt.backprop_clip and use_dp:
         prop_grad_clipper.enable_hooks()
 
     d_optimizer.step()

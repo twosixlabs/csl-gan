@@ -102,7 +102,7 @@ class PGCWrapper(nn.Module):
     def forward(self, x):
         return self.dummy(self.module(l2_clip(x, self.input_clip_param)))
 
-class PropogatingGradClipper:
+class BackpropClipper:
     def __init__(self, model, back_clip_params=None, input_clip_params=None, auto_activation_scale=0.5, auto_weight_grad_scale=1e-4, device="cpu"):
         # If back_clip_params or input_clip_params is None, will automatically determine them based on layer size and auto params
         self.hooks_enabled = True

@@ -14,7 +14,7 @@ import init_util
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("path", type=str)
+parser.add_argument("path", type=str, help="Path to output folder containing opt.txt")
 parser.add_argument("epochs", type=int)
 opt_new = parser.parse_args()
 

@@ -1,6 +1,7 @@
 import torch, torchvision, os, argparse, csv
 import pandas as pd
-from util import *
+import init_util
+import util
 import options
 
 parser = argparse.ArgumentParser()
@@ -19,15 +20,15 @@ output_dir = opt.path + "G-" + str(opt.epochs) + "-samples/"
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
-    
+
 # Load model
 
 train_opt = options.load_opt(opt.path + "opt.txt")
 
 torch.set_grad_enabled(False)
-G, _ = util.init_models(train_opt, init_D=False)
+G, _ = init_util.init_models(train_opt, init_D=False)
 G.to(opt.device)
-util.load_model(opt.path + "saves/G-" + str(opt.epochs), G)
+util.load_model(opt.path + "saves/G-" + str(opt.epochs), G, device=opt.device)
 G.eval()
 
 with torch.no_grad():

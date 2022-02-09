@@ -39,10 +39,11 @@ MNIST_DEFAULTS = {
     "tm_min_val": 1,
     "save_every": 50,
     "log_every": 100000, # Gets rounded down to be 1 epoch
-    "sample_every": 1200000,
+    "sample_every": 600000,
     "sample_num": 100,
 
-    "n_classes": 10
+    "n_classes": 10,
+    "weights_seed": 42
 }
 
 CELEBA_DEFAULTS = {
@@ -112,8 +113,8 @@ def str2bool(v):
 def parse():
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--weights_seed", type=int, default=42)
     parser.add_argument("--manual_seed", type=int, default=-1)
-
 
     parser.add_argument("dataset", type=str, choices=["MNIST", "CelebA"])
     parser.add_argument("-d", "--data_path", type=str, default=None)
@@ -132,6 +133,7 @@ def parse():
     parser.add_argument("-ne", "--n_epochs", type=int, default=None)
     parser.add_argument("--d_lr", type=float, default=None)
     parser.add_argument("--g_lr", type=float, default=None)
+    parser.add_argument("-wd", "--weight_decay", type=float, default=0)
     parser.add_argument("-bs", "--batch_size", type=int, default=None)
     parser.add_argument("-bss", "--batch_split_size", type=int, default=None) # only for model parallel
     parser.add_argument("-tss", "--train_set_size", type=int, default=None)
@@ -188,14 +190,14 @@ def parse():
     parser.add_argument("--tm_rho_per_epoch", type=float, default=10)
     parser.add_argument("--tm_sens_compute_bs", type=float, default=None, help="Batch size for batched computation of trimmed mean sensitivity. If not set will default to double batch_size.")
 
-    parser.add_argument("--clip_propogating_grads", type=str2bool, default=False)
-    parser.add_argument("--prop_grad_clip_param", type=float, default=0.01)
-    parser.add_argument("--prop_grad_clip_param_pl", type=float, nargs="*", default=None)
-    parser.add_argument("--forward_input_clip_param", type=float, default=20)
-    parser.add_argument("--forward_input_clip_param_pl", type=float, nargs="*", default=None)
-    parser.add_argument("-pgcaas", "--pgc_auto_activation_scale", type=float, default=0.2)
-    parser.add_argument("-pgcawgs", "--pgc_auto_weight_grad_scale", type=float, default=1e-3)
-    parser.add_argument("--pgc_during_g_train", type=str2bool, default=True)
+    parser.add_argument("-bpc", "--backprop_clip", type=str2bool, default=False)
+    parser.add_argument("--bpc_back_clip_param", type=float, default=0.01)
+    parser.add_argument("--bpc_back_clip_param_pl", type=float, nargs="*", default=None)
+    parser.add_argument("--bpc_forward_clip_param", type=float, default=20)
+    parser.add_argument("--bpc_forward_clip_param_pl", type=float, nargs="*", default=None)
+    parser.add_argument("-bpcaas", "--bpc_auto_activation_scale", type=float, default=0.2)  # Experimental
+    parser.add_argument("-bpcawgs", "--bpc_auto_weight_grad_scale", type=float, default=1e-3)  # Experimental
+    parser.add_argument("--bpc_during_g_train", type=str2bool, default=True)
 
     parser.add_argument("--save_every", type=int, default=None) # epochs
     parser.add_argument("--log_every", type=int, default=None) # samples, prints and logs to csv
@@ -238,6 +240,8 @@ def parse():
         if opt.model == "DeepConvResNet" and opt.use_dp:
             print("Setting train_d_until_threshold to -1, which is generally recommended for WGAN using DP")
             opt.train_d_until_threshold = -1
+        if opt.backprop_clip:
+            print("Backpropogation clipping implementation is experimental and not finished.")
 
         # Check for incompatible configurations
         if opt.imm_sens_per_param and not (opt.imm_sens_scaling_mode is None or opt.imm_sens_scaling_mode == "standard"):

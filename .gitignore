@@ -3,3 +3,7 @@ output
 core
 venv
 tb
+outputs
+values
+samples
+test_config.sh
